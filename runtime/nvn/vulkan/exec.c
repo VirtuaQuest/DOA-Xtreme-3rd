@@ -196,6 +196,24 @@ void vk_wait_seq(uint64_t seq) {
 
 uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 
+// The latest submission whose GPU work the game can see: draws and dispatches (vertex / index data read in place,
+// storage buffers written into the guest heap) and the timing counters. Copies, clears and uploads take the guest
+// data at translation (vk_transient), and readbacks are flushed at once, so a submission with only those is done as
+// far as the game can tell once it is translated. DOAX3's loader copies each texture from a staging texture and calls
+// QueueFinish before reusing it: ~350 GPU round trips per load, ~100 ms. The game's waits (renderer_wait_seq,
+// renderer_sync) go no further than this. LARECOMP_FENCE_ALL=1: every submission waited for as before.
+static _Atomic uint64_t obs_seq;
+static void note_observable(void) { atomic_store_explicit(&obs_seq, vk_pending_seq(), memory_order_release); }
+static uint64_t observable_limit(uint64_t seq) {
+    static int all = -1;
+    if (all < 0) all = getenv("LARECOMP_FENCE_ALL") && atoi(getenv("LARECOMP_FENCE_ALL"));
+    uint64_t o = atomic_load_explicit(&obs_seq, memory_order_acquire);
+    if (all || seq <= o) return seq;
+    static int nlog;
+    if (!nlog++) LOG("[vk] game waits shortened: submissions with no draws or dispatches aren't waited for (LARECOMP_FENCE_ALL=1: off)\n");
+    return o;
+}
+
 // ---- the game's GPU timing counters (nvnCommandBufferReportCounter, two per frame)
 // The game times its GPU work with these and drops to 30 fps when frames look slow. They used to get the host clock
 // at translation time, so our command translation counted as GPU time: busy scenes (outdoors, ~400 draws) looked slow
@@ -562,7 +580,7 @@ void renderer_sync(void) {
     uint64_t s = submit_seq;
     pthread_mutex_unlock(&seq_lock);
     wait_why = "QueueFinish / sync all";
-    vk_wait_seq(s);
+    vk_wait_seq(observable_limit(s));  // (the deferred fence, if any, is no newer: done too)
     overlap_clear();
 }
 
@@ -602,6 +620,7 @@ void renderer_wait_seq(uint64_t seq) {
     pthread_mutex_unlock(&seq_lock);
     wait_why = seq > s ? "SyncWait (fence not submitted yet)" : "SyncWait";
     if (seq > s) seq = s;  // not queued yet (other thread): everything queued so far (vk_wait_seq: the recorder, then the GPU)
+    if (!(seq = observable_limit(seq))) { wait_why = NULL; return; }
     if (overlap_on()) {  // (see deferred_seq) wait for the fence deferred last time, defer this one
         uint64_t done = vk_completed_seq();  // (the timeline's value: a submission the recorder hasn't made yet isn't done)
         pthread_mutex_lock(&seq_lock);
@@ -5518,6 +5537,7 @@ static void gpl_probe(void) {}
 
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
+    note_observable();
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program, stencil_slots(5));
     if (!cp || atomic_load(&cp->p.state) != 1) { SKIP_CS(!cp ? SK_NO_STAGES : atomic_load(&cp->p.state) == 2 ? SK_CS_FAILED : SK_CS_BUILDING); return; }
@@ -5710,6 +5730,7 @@ static void prep_check(const PipeKey *k, uint64_t vh, uint64_t fh, const ShaderR
 
 static void draw_(CmdRec *r, bool indexed);
 static void draw(CmdRec *r, bool indexed) {
+    note_observable();
     PROF_T0();
     draw_(r, indexed);
     PROF_ADD(prof_draw);
@@ -7405,6 +7426,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_REPORT_COUNTER: {
             // The game times its GPU work with these (two per frame) and drops to 30 fps when that looks slow: the
             // host clock now, replaced by the GPU's time at this point once the submission is done (cq_resolve).
+            note_observable();
             uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
             uint32_t type = (uint32_t)r->x[0];
             static uint32_t seen;
