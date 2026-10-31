@@ -43,6 +43,7 @@ typedef struct {
     uint8_t topo;            // primitive class: 0 points, 1 lines, 2 triangles
     uint8_t poly_fill;       // filled polygons (0: lines)
     uint32_t local[3];       // compute: local size
+    uint32_t stencil;        // compute: texture slots sampled as stencil (ShaderKey.tex_stencil_mask; " st=", 0: none)
 } ShaderRec;
 
 // The record's text form (one line, no newline) and back
@@ -54,6 +55,8 @@ uint64_t shader_code_hash(const uint8_t *code, size_t n);
 struct NvnShaderStage;
 uint64_t shader_stage_hash(const struct NvnShaderStage *s);  // its code up to the end of its constants; 0: unknown
 uint8_t shader_topo_class(uint32_t mode);                     // NVN draw mode -> ShaderRec.topo
+// (shader_prep.c) keep a stage's code in the player's cache for later preparation (h: its shader_stage_hash)
+void shader_code_store(const struct NvnShaderStage *s, uint64_t h);
 
 // Stale-program detector. The in-process program and compute lookups are keyed by guest code address; a hit is not
 // otherwise checked against the code. Each program keeps a fingerprint of the code it was built from (its full hash,

@@ -68,6 +68,7 @@ void shader_rec_format(const ShaderRec *r, char *out, size_t n) {
 #define PUT(...) do { if (o < n) o += (size_t)snprintf(out + o, n - o, __VA_ARGS__); } while (0)
     if (r->kind == 'C') {
         PUT("C cs=%016" PRIx64 " l=%u,%u,%u", r->vs, r->local[0], r->local[1], r->local[2]);
+        if (r->stencil) PUT(" st=%x", r->stencil);
         return;
     }
     PUT("G vs=%016" PRIx64 " fs=%016" PRIx64 " f=%x a=", r->vs, r->fs, r->flags);
@@ -125,6 +126,7 @@ bool shader_rec_parse(const char *line, ShaderRec *r) {
             if (e == v) return false;
             v = *e == ',' ? e + 1 : e;
         }
+        if ((v = field(line, "st"))) r->stencil = (uint32_t)strtoul(v, NULL, 16);
         return r->vs != 0;
     }
     if (!(v = field(line, "vs"))) return false;
@@ -448,6 +450,58 @@ static void idx_dir(const char *dir, int depth) {
     closedir(dd);
 }
 
+// ------------------------------------------------------------------ the player's own shader code store
+// DOAX3 keeps its shaders inside its packed archive (romfs 00/data_00.lnk), which the index above can't read. So each
+// stage's code is saved as the game hands it to NVN, the first time a program / compute program is built:
+// cache/shader_code/<hash>.bin, on the player's machine only (it is their game files' code). Format: u32 'SHC1',
+// size, const offset, const size, then the size bytes. The index takes them, so the player's own list (shader_seen)
+// is prepared from the second start on.
+#define CODE_DIR "cache/shader_code"
+#define CODE_MAGIC 0x31434853u
+
+void shader_code_store(const struct NvnShaderStage *s, uint64_t h) {
+    if (!h || !s->code_addr || !s->const_offset) return;
+    char p[128];
+    snprintf(p, sizeof p, CODE_DIR "/%016llx.bin", (unsigned long long)h);
+    struct stat sb;
+    if (stat(p, &sb) == 0) return;
+    mkdir("cache", 0755);
+    mkdir(CODE_DIR, 0755);
+    uint32_t len = s->const_offset + s->const_size, hdr[4] = {CODE_MAGIC, len, s->const_offset, s->const_size};
+    uint8_t *d = malloc(sizeof hdr + len);
+    memcpy(d, hdr, sizeof hdr);
+    memcpy(d + sizeof hdr, (const void *)(uintptr_t)s->code_addr, len);
+    shader_cache_write(p, d, sizeof hdr + len);
+    free(d);
+}
+
+static void idx_store(void) {
+    DIR *dd = opendir(CODE_DIR);
+    if (!dd) return;
+    struct dirent *e;
+    while ((e = readdir(dd))) {
+        char p[512];
+        if (strlen(e->d_name) != 20) continue;  // (<16 hex digits>.bin)
+        snprintf(p, sizeof p, CODE_DIR "/%s", e->d_name);
+        FILE *f = fopen(p, "rb");
+        if (!f) continue;
+        uint32_t hdr[4];
+        uint8_t *d = NULL;
+        if (fread(hdr, 4, 4, f) == 4 && hdr[0] == CODE_MAGIC && hdr[1] < (16u << 20) && hdr[2] + hdr[3] == hdr[1] &&
+            (d = malloc(hdr[1])) && fread(d, 1, hdr[1], f) == hdr[1]) {
+            uint64_t h = shader_code_hash(d, hdr[1]);
+            if (h == strtoull(e->d_name, NULL, 16)) {  // (a damaged file is left out)
+                idx_files = realloc(idx_files, sizeof *idx_files * (size_t)(idx_nfiles + 1));
+                idx_files[idx_nfiles] = (IdxSrc){strdup(p), NULL};
+                idx_add(h, (uint32_t)idx_nfiles++, sizeof hdr, hdr[1], hdr[2], hdr[3]);
+            }
+        }
+        free(d);
+        fclose(f);
+    }
+    closedir(dd);
+}
+
 // The shader's code (+ its constants), read from the game files; NULL: not there
 static uint8_t *blob_read(const IdxEnt *e, ShaderBlob *b, FILE **files) {
     uint8_t *d = calloc(1, (size_t)e->size + 0x100);  // (zero padding past the constants)
@@ -545,10 +599,11 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
             fclose(f);
         }
     } else list = strdup(shipped_list);
-    if (!list || !*list) { free(list); LOG("[shader] preparation: no variant list\n"); return false; }
-    if (!renderer_prepare_begin()) { free(list); LOG("[shader] preparation: no GPU device yet\n"); return false; }
     uint64_t seen_game;
     char *seen = shader_seen_read(&seen_game);  // (the player's own list: after the shipped one)
+    // (DOAX3 ships no list: the player's own alone, once there is one)
+    if (!list || (!*list && !(seen && *seen))) { free(list); free(seen); LOG("[shader] preparation: no variant list\n"); return false; }
+    if (!renderer_prepare_begin()) { free(list); free(seen); LOG("[shader] preparation: no GPU device yet\n"); return false; }
     int total = 0;
     for (char *p = list; *p; p++) total += *p == '\n';
     for (char *p = seen; p && *p; p++) total += *p == '\n';
@@ -558,6 +613,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         char main_nso[1100];  // (<game files>/exefs/main, next to romfs/)
         snprintf(main_nso, sizeof main_nso, "%s/../exefs/main", romfs);
         idx_nso(main_nso);
+        idx_store();
     }
     double t_idx = ms_now() - t0;
     if (idx_n) {  // (the player's list of other game files - none yet, or an update: only what this game has)
@@ -620,7 +676,7 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
 }
 
 void shader_prep_boot(const char *romfs) {
-    const char *e = getenv("LARECOMP_SHADER_PREP");
-    if (!e || !atoi(e)) return;
+    const char *e = getenv("LARECOMP_SHADER_PREP");  // (on by default: no start screen runs it here; =0 off)
+    if (e && !atoi(e)) return;
     shader_prep_run(romfs, NULL, NULL);
 }

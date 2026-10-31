@@ -2083,6 +2083,8 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
             return pp;
         }
         shader_first_visit("program", vh, fh, ck);
+        shader_code_store(&np->stages[0], vh);
+        shader_code_store(&np->stages[1], fh);
     }
     Prog *p = calloc(1, sizeof *p);
     prog_fp_check(p, np);  // (takes the fingerprint)
@@ -5194,9 +5196,10 @@ static void build_compute(void *arg) {
 static struct CsEnt { uint64_t addr; uint32_t smask; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
                                                                                  // and stencil slots
 
-static uint64_t cs_content_key(uint64_t code_hash, const uint32_t local[3]) {
+static uint64_t cs_content_key(uint64_t code_hash, const uint32_t local[3], uint32_t smask) {
     uint64_t h = code_hash;
     for (int i = 0; i < 3; i++) { h ^= local[i]; h *= 0x100000001B3ull; }
+    if (smask) { h ^= smask; h *= 0x100000001B3ull; }  // (stencil slots: another translation)
     return h;
 }
 
@@ -5252,17 +5255,18 @@ static CsProg *compute_program(NvnProgram *np, uint32_t smask) {
         if (!local[i]) local[i] = 1;
     }
     if (shader_rec_recording()) {
-        ShaderRec rec = {.kind = 'C', .vs = shader_stage_hash(ss), .local = {local[0], local[1], local[2]}};
+        ShaderRec rec = {.kind = 'C', .vs = shader_stage_hash(ss), .local = {local[0], local[1], local[2]}, .stencil = smask};
         shader_rec_note(&rec);
     }
     uint64_t ch = shader_stage_hash(ss);
-    CsProg *cp = ch && prep_cs_n && !smask ? PREP_GET(prep_cs, cs_content_key(ch, local)) : NULL;  // prepared before the game
+    CsProg *cp = ch && prep_cs_n ? PREP_GET(prep_cs, cs_content_key(ch, local, smask)) : NULL;  // prepared before the game
     if (cp) {
         if (n < 256) { tab[n].addr = ss->code_addr; tab[n].smask = smask; tab[n].cp = cp; g_cs_n = n + 1; }
         shader_fp_check(&cp->p.fp[0], ss, "cs");
         return cp;
     }
-    shader_first_visit("compute", ch, 0, cs_content_key(ch, local));
+    shader_first_visit("compute", ch, 0, cs_content_key(ch, local, smask));
+    shader_code_store(ss, ch);
     cp = calloc(1, sizeof *cp);
     shader_fp_check(&cp->p.fp[0], ss, "cs");  // (takes the fingerprint)
     cp->code = ss->code_addr;  // (for the build logs)
@@ -5354,12 +5358,12 @@ static void prep_pipeline(void *arg) {
 
 bool renderer_prepare(const ShaderRec *r, const ShaderBlob *vsb, const ShaderBlob *fsb) {
     if (r->kind == 'C') {
-        uint64_t ck = cs_content_key(r->vs, r->local);
+        uint64_t ck = cs_content_key(r->vs, r->local, r->stencil);
         if (PREP_GET(prep_cs, ck)) return true;
         CsProg *cp = calloc(1, sizeof *cp);
         cp->code = r->vs;  // (prepared: its content hash, for the build logs)
         memcpy(cp->local, r->local, sizeof cp->local);
-        if (!translate_compute(cp, vsb->code, vsb->const_offset ? vsb->const_offset : 0x10000, 0, 0)) return false;
+        if (!translate_compute(cp, vsb->code, vsb->const_offset ? vsb->const_offset : 0x10000, 0, r->stencil)) return false;
         PREP_PUT(prep_cs, ck, cp);
         prep_job(build_compute, cp);
         return true;
