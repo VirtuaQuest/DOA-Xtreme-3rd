@@ -60,8 +60,10 @@ static int cmp(const void *x, const void *y) {
     return a < b ? 1 : a > b ? -1 : 0;
 }
 
+static long from = -2, to;
+static void fnprof_dump(void);
+
 void fnprof_frame(uint64_t frame) {
-    static long from = -2, to;
     if (from == -2) {
         from = -1;
         const char *e = getenv("LARECOMP_FNPROF");
@@ -69,7 +71,15 @@ void fnprof_frame(uint64_t frame) {
     }
     if (from < 0) return;
     if ((long)frame == from) { g_fnprof = 1; LOG("[fnprof] on at frame %llu\n", (unsigned long long)frame); }
-    if ((long)frame != to) return;
+    if ((long)frame == to) fnprof_dump();
+}
+
+// A crash inside the window: what ran up to it.
+void fnprof_crash(void) {
+    if (g_fnprof && from >= 0) fnprof_dump();
+}
+
+static void fnprof_dump(void) {
     g_fnprof = 0;
     uint64_t (*rows)[2] = malloc(sizeof(uint64_t[2]) * NSLOT);
     int n = 0;

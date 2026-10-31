@@ -229,9 +229,13 @@ static void ex_fill(Extractor *e) {
     }
 }
 
-static void ex_set_data_source(Cpu *c) {
+// Slot 15 SetDataSource(ClientStreamReader*, const char *path) (LA) and slot 2 SetDataSource(const char *path)
+// (DOAX3: its movies, "rom:/movie/MOV_OPENING.mp4").
+static void ex_open_path(Cpu *c, const char *path);
+static void ex_set_data_source(Cpu *c) { ex_open_path(c, (const char *)(uintptr_t)c->x[2]); }
+static void ex_set_data_source_path(Cpu *c) { ex_open_path(c, (const char *)(uintptr_t)c->x[1]); }
+static void ex_open_path(Cpu *c, const char *path) {
     Extractor *e = self_state(c);
-    const char *path = (const char *)(uintptr_t)c->x[2];
     // Replacing a source also drops its last packet and track selection, including after a failed open.
     if (e->pkt) av_packet_free(&e->pkt);
     if (e->fmt) avformat_close_input(&e->fmt);
@@ -387,11 +391,9 @@ static void movie_log_slot_n(Cpu *c, const char *cls, int slot) {
     c->x[0] = 0;
 }
 #define SLOT_STUB(cls, k) static void cls##_slot##k(Cpu *c) { movie_log_slot_n(c, #cls, k); }
-SLOT_STUB(Extractor, 2)
 SLOT_STUB(Extractor, 3)
 SLOT_STUB(Extractor, 7)
 SLOT_STUB(Extractor, 13)
-SLOT_STUB(Decoder, 17)
 
 #define EX_LOCKED(fn) \
     static void fn##_l(Cpu *c) { pthread_mutex_lock(&ex_lock); fn(c); pthread_mutex_unlock(&ex_lock); }
@@ -406,11 +408,12 @@ EX_LOCKED(ex_advance)
 EX_LOCKED(ex_get_sample_time)
 EX_LOCKED(ex_cached_duration)
 EX_LOCKED(ex_set_data_source)
+EX_LOCKED(ex_set_data_source_path)
 
 HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     uint64_t vt = g_ex_vt;
     if (!vt) {
-        HostFn f[16] = {ex_dtor_l, ex_dtor_l, Extractor_slot2, Extractor_slot3, ex_get_track_count_l,
+        HostFn f[16] = {ex_dtor_l, ex_dtor_l, ex_set_data_source_path_l, Extractor_slot3, ex_get_track_count_l,
                         ex_get_track_config_l, ex_select_track_l, Extractor_slot7, ex_seek_l, ex_get_sample_track_l,
                         ex_read_l, ex_advance_l, ex_get_sample_time_l, Extractor_slot13, ex_cached_duration_l,
                         ex_set_data_source_l};
@@ -457,6 +460,9 @@ typedef struct {
     bool eos_pending;
     int64_t eos_time;
     bool stopped;  // Stop / destroyed: no more events (see dec_stop)
+    // DOAX3's player makes its textures and copy buffers when the decoder signals "format changed" (event 2) and
+    // reads frames only after that: the first frame announces the format, its output waits until it's read.
+    bool fmt_signaled, fmt_read;
     pthread_mutex_t lock;
 } Decoder;
 
@@ -511,11 +517,11 @@ static void dec_configure(Cpu *c) {
     d->video = p->codec_type == AVMEDIA_TYPE_VIDEO;
     d->width = p->width;
     d->height = p->height;
-    d->stride = (p->width + 255) & ~255;
+    d->stride = p->width;  // (packed: DOAX3 copies width x height of Y, then the UV plane right after it)
     d->sample_rate = p->sample_rate;
     d->channels = p->ch_layout.nb_channels;
     d->in_cap = d->video ? 4 << 20 : 256 << 10;
-    d->out_cap = d->video ? (uint32_t)(d->stride * ((d->height + 15) & ~15) * 3 / 2) : 64 << 10;
+    d->out_cap = d->video ? (uint32_t)(d->stride * d->height * 3 / 2) : 64 << 10;
     for (int i = 0; i < NIN; i++) d->in_mem[i] = buf_get(d->in_cap);
     for (int i = 0; i < NOUT; i++) d->out_mem[i] = buf_get(d->out_cap);
     LOG("[movie] decoder %s configured: %dx%d %d Hz %d ch\n", codec->name, d->width, d->height, d->sample_rate, d->channels);
@@ -534,9 +540,10 @@ static void dec_output_format(Decoder *d, MediaData *m) {
         md_set_str(m, "mime", "video/raw");
         md_set_int(m, "width", d->width);
         md_set_int(m, "height", d->height);
+        md_set_int(m, "stride", d->stride);
         md_set_int(m, "nv12-y-stride", d->stride);
         md_set_int(m, "nv12-y-offset", 0);
-        md_set_int(m, "nv12-uv-offset", d->stride * ((d->height + 15) & ~15));
+        md_set_int(m, "nv12-uv-offset", d->stride * d->height);
         md_set_int(m, "nv12-colorspace", 0);
     } else {
         md_set_str(m, "mime", "audio/raw");
@@ -545,7 +552,26 @@ static void dec_output_format(Decoder *d, MediaData *m) {
     }
 }
 
-static void dec_get_output_format(Cpu *c) { dec_output_format(self_state(c), md(c->x[1])); c->x[0] = 0; }
+static void dec_get_output_format(Cpu *c) {
+    Decoder *d = self_state(c);
+    dec_output_format(d, md(c->x[1]));
+    c->x[0] = 0;
+    pthread_mutex_lock(&d->lock);
+    bool release = d->fmt_signaled && !d->fmt_read && d->nready;  // (see fmt_signaled) the held frames now
+    if (d->fmt_signaled) d->fmt_read = true;
+    pthread_mutex_unlock(&d->lock);
+    if (release) dec_signal(c, d, 1);
+}
+
+// New output: "output available", or for the first video frame "format changed" (see fmt_signaled).
+static void dec_signal_output(Cpu *c, Decoder *d) {
+    pthread_mutex_lock(&d->lock);
+    bool announce = d->video && d->events[2] && !d->fmt_signaled, held = d->fmt_signaled && !d->fmt_read;
+    if (announce) d->fmt_signaled = true;
+    pthread_mutex_unlock(&d->lock);
+    if (announce) dec_signal(c, d, 2);
+    else if (!held) dec_signal(c, d, 1);
+}
 static void dec_get_output_buffer_format(Cpu *c) { dec_output_format(self_state(c), md(c->x[2])); c->x[0] = 0; }
 
 static void dec_start(Cpu *c) {
@@ -630,7 +656,7 @@ static bool emit_frame(Decoder *d, AVFrame *f, int64_t time, uint32_t flags) {
     if (flags & MOVIE_EOS) {
         size = 0;
     } else if (d->video) {
-        int h = d->height, w = d->width, uv_off = d->stride * ((h + 15) & ~15);
+        int h = d->height, w = d->width, uv_off = d->stride * h;
         for (int y = 0; y < h; y++) memcpy(o + y * d->stride, f->data[0] + y * f->linesize[0], w);
         for (int y = 0; y < h / 2; y++) {  // interleave U and V into NV12
             uint8_t *uv = o + uv_off + y * d->stride;
@@ -715,7 +741,7 @@ static void dec_send_input(Cpu *c) {
     if (idx >= 0 && idx < NIN) d->in_busy[idx] = false;
     pthread_mutex_unlock(&d->lock);
     dec_signal(c, d, 0);
-    if (produced) dec_signal(c, d, 1);
+    if (produced) dec_signal_output(c, d);
     c->x[0] = 0;
 }
 
@@ -749,14 +775,14 @@ static void dec_get_output_buffer(Cpu *c) {
         static int gpu = -1;
         if (gpu < 0) gpu = !getenv("LARECOMP_MOVIE_CPU_CONVERT");
         if (gpu && renderer_upload_nv12(t, d->out_mem[i], (uint32_t)w, (uint32_t)h, (uint32_t)d->stride,
-                                        (uint32_t)(d->stride * ((h + 15) & ~15)))) {
+                                        (uint32_t)(d->stride * h))) {
             c->x[0] = 0;
             return;
         }
         if (!d->sws)
             d->sws = sws_getContext(w, h, AV_PIX_FMT_NV12, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
         if (!d->rgba) d->rgba = malloc((size_t)w * h * 4);
-        const uint8_t *src[2] = {d->out_mem[i], d->out_mem[i] + d->stride * ((h + 15) & ~15)};
+        const uint8_t *src[2] = {d->out_mem[i], d->out_mem[i] + d->stride * h};
         int src_stride[2] = {d->stride, d->stride};
         uint8_t *dst[1] = {d->rgba};
         int dst_stride[1] = {w * 4};
@@ -765,11 +791,25 @@ static void dec_get_output_buffer(Cpu *c) {
         c->x[0] = 0;
         return;
     }
+    if (b->base && b->capacity >= d->out_size[i]) {  // the game's own buffer (DOAX3): the output copied into it
+        memcpy((void *)(uintptr_t)b->base, d->out_mem[i], d->out_size[i]);
+        b->offset = 0;
+        b->size = (int32_t)d->out_size[i];
+        c->x[0] = 0;
+        return;
+    }
     memset(b, 0, sizeof *b);
     b->base = (uint64_t)(uintptr_t)d->out_mem[i];
     b->capacity = d->out_cap;
     b->size = (int32_t)d->out_size[i];
     c->x[0] = 0;
+}
+
+// slot 17 GetOutputBuffer(int, Buffer*, MediaData*): the buffer and its format
+static void dec_get_output_buffer_fmt(Cpu *c) {
+    uint64_t m = c->x[3];
+    dec_get_output_buffer(c);
+    if (m) dec_output_format(self_state(c), md(m));
 }
 
 static void dec_release_output(Cpu *c) {
@@ -781,7 +821,7 @@ static void dec_release_output(Cpu *c) {
     if (i >= 0 && i < NOUT) d->out_busy[i] = false;
     bool produced = flush_pending(d);
     pthread_mutex_unlock(&d->lock);
-    if (produced) dec_signal(c, d, 1);
+    if (produced) dec_signal_output(c, d);
     c->x[0] = 0;
 }
 
@@ -837,7 +877,7 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
         HostFn f[19] = {dec_dtor, dec_dtor, dec_configure, dec_register_events, dec_get_output_format,
                         dec_start, dec_stop, ok, ok, dec_acquire_input, dec_get_input_buffer, dec_send_input,
                         dec_acquire_output, dec_get_output_buffer, dec_get_counts, dec_release_output, ok,
-                        Decoder_slot17, dec_get_output_buffer_format};
+                        dec_get_output_buffer_fmt, dec_get_output_buffer_format};
         vt = g_dec_vt = make_vtable(f, 19, "Decoder");
     }
     uint64_t *self = (uint64_t *)(uintptr_t)c->x[0];

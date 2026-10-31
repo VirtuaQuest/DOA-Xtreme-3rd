@@ -113,6 +113,22 @@ void *hle_alloc(uint64_t size) {
     return (void *)a;
 }
 
+// (debug) LARECOMP_TRACE_CALL=<hex addr>: the guest function's indirect calls (blr / br, through rt_dispatch) logged
+// with x0-x3 and the x0 it returns; the first 200.
+static uint64_t trace_call_addr;
+static GuestFn trace_call_orig;
+static void trace_call(Cpu *c) {
+    static int n;
+    uint64_t a[4] = {c->x[0], c->x[1], c->x[2], c->x[3]}, lr = c->x[30];
+    trace_call_orig(c);
+    if (__atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) < 200) {
+        extern uint64_t renderer_present_count(void);
+        LOG("[trace] %llx(%llx, %llx, %llx, %llx) = %llx (lr %llx, frame %llu)\n", (unsigned long long)trace_call_addr,
+            (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2], (unsigned long long)a[3],
+            (unsigned long long)c->x[0], (unsigned long long)lr, (unsigned long long)renderer_present_count());
+    }
+}
+
 void dispatch_init(void) {  // (after gamelib_load)
     const GameLibTables *g = gamelib_tables();
     ntables = 0;
@@ -121,6 +137,9 @@ void dispatch_init(void) {  // (after gamelib_load)
         uint64_t n = *m->count;
         if (n) tables[ntables++] = (FnTable){m->addrs, m->fns, n, m->addrs[0], m->addrs[n - 1]};
     }
+    const char *tc = getenv("LARECOMP_TRACE_CALL");
+    if (tc && !trace_call_orig && (trace_call_addr = strtoull(tc, NULL, 16)) && (trace_call_orig = dispatch_lookup(trace_call_addr)))
+        hle_override(trace_call_addr, trace_call, "trace");
 }
 
 GuestFn dispatch_lookup(uint64_t addr) {

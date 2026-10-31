@@ -684,6 +684,8 @@ static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *ep) {
     MEMORY_BASIC_INFORMATION mi;
     if (VirtualQuery((void *)(uintptr_t)ep->ContextRecord->Rsp, &mi, sizeof mi) && mi.State == MEM_COMMIT)
         lr = *(uint64_t *)(uintptr_t)ep->ContextRecord->Rsp;
+    extern void fnprof_crash(void);  // (fnprof.c: a profile window the crash cut short is written now)
+    fnprof_crash();
     rt_fault_report(what, fa, ep->ContextRecord->Rip, lr);
 }
 
