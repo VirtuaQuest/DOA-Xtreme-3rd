@@ -422,12 +422,25 @@ static void reverb_process(Reverb *rv, float *const *in, float *const *out, uint
 // BufferMixer (effect type 1): output[i] += input[i] * volume[i] for i < count, buffers of the effect's mix.
 typedef struct { uint8_t in[MIXBUF_MAX], out[MIXBUF_MAX]; float vol[MIXBUF_MAX]; uint32_t count; } BufferMixer;
 
+// Aux (effect type 2): the game's own CPU effect. Each frame the DSP writes the effect's input buffers into the send
+// ring and replaces its output buffers with what the game wrote back into the return ring; disabled, both rings are
+// reset and the input passes through dry. As the SDK's server (nn::audio::server::AuxInfo::Update,
+// CommandGenerator::GenerateAuxCommand, dsp::WriteAuxBufferDsp / ReadAuxBufferDsp): a ring is the info address
+// given + 0x40 (the DSP's read / write offsets, in samples, at +0 / +4) and its int32 samples from + 0x80; a frame
+// is channel blocks of N samples at offsets 0, N, 2N, ..., and the last channel moves the offsets on by channels x N.
+typedef struct {
+    uint8_t in[MIXBUF_MAX], out[MIXBUF_MAX];
+    uint32_t ch, count_max;
+    uint64_t send, ret;  // the info addresses (0: not mapped - no commands, the buffers are left alone)
+} Aux;
+
 struct Effect {
     uint8_t type, enabled;
     int32_t mix_id;
     uint32_t order;
     Reverb rv;
     BufferMixer bm;
+    Aux aux;
 };
 
 // Effect slot update from EffectInParameterVersion1 (0xC0 bytes: type, is_new, enabled, mix, buffers, order, data).
@@ -443,6 +456,17 @@ static void effect_update(Effect *fx, const uint8_t *e) {
         memcpy(fx->bm.vol, e + 0x20 + 2 * MIXBUF_MAX, sizeof fx->bm.vol);
         memcpy(&fx->bm.count, e + 0x20 + 2 * MIXBUF_MAX + sizeof fx->bm.vol, 4);
         if (fx->bm.count > MIXBUF_MAX) fx->bm.count = MIXBUF_MAX;
+        return;
+    }
+    if (fx->type == 2) {  // (input[24], output[24], channels, rate, ring samples, pad, send info, send storage, return ...)
+        const uint8_t *d = e + 0x20;
+        memcpy(fx->aux.in, d, MIXBUF_MAX);
+        memcpy(fx->aux.out, d + MIXBUF_MAX, MIXBUF_MAX);
+        memcpy(&fx->aux.ch, d + 0x30, 4);
+        memcpy(&fx->aux.count_max, d + 0x38, 4);
+        memcpy(&fx->aux.send, d + 0x40, 8);
+        memcpy(&fx->aux.ret, d + 0x50, 8);
+        if (fx->aux.ch > MIXBUF_MAX) fx->aux.ch = MIXBUF_MAX;
         return;
     }
     if (fx->type != 4) return;
@@ -468,6 +492,76 @@ static void effect_update(Effect *fx, const uint8_t *e) {
     }
 }
 
+// dsp::WriteAuxBufferDsp / ReadAuxBufferDsp: n samples at the ring's offset (+4 write, +0 read) + off, wrapping; the
+// ring offset then moves on by update (0: not this time). Returns n, or 0 when the ring isn't usable.
+static uint32_t aux_ring(uint64_t info, uint32_t count_max, int32_t *data, uint32_t n, uint32_t off, uint32_t update,
+                         bool write) {
+    if (!count_max || !info) return 0;
+    uint32_t *pos = (uint32_t *)(uintptr_t)(info + 0x40 + (write ? 4 : 0));
+    int32_t *ring = (int32_t *)(uintptr_t)(info + 0x80);
+    uint32_t at = *pos + off;
+    if (at > count_max) return 0;
+    for (uint32_t done = 0; done < n;) {
+        uint32_t k = count_max - at < n - done ? count_max - at : n - done;
+        if (write) memcpy(ring + at, data + done, k * 4);
+        else memcpy(data + done, ring + at, k * 4);
+        done += k;
+        at = (at + k) % count_max;
+    }
+    if (update) *pos = (*pos + update) % count_max;
+    return n;
+}
+
+static void aux_process(Renderer *r, Effect *fx, Mix *m) {
+    uint32_t N = r->sample_count;
+    Aux *a = &fx->aux;
+    if (!a->send || !a->ret || N > 4096) return;  // (the SDK makes no commands while a ring isn't mapped)
+    static int dry = -1;  // LARECOMP_AUX_DRY=1: as before, the game's effect left out
+    if (dry < 0) dry = getenv("LARECOMP_AUX_DRY") ? 1 : 0;
+    for (uint32_t c = 0; c < a->ch; c++) {
+        if (a->in[c] >= m->bufs || a->out[c] >= m->bufs) continue;
+        float *in = m->buf + a->in[c] * N, *out = m->buf + a->out[c] * N;
+        if (!fx->enabled || dry) {
+            if (!dry) {  // dsp::ResetAuxBufferDsp on both rings
+                for (int k = 0; k < 2; k++) {
+                    uint8_t *i = (uint8_t *)(uintptr_t)((k ? a->ret : a->send) + 0x40);
+                    memset(i, 0, 8), memset(i + 8, 0, 4);
+                }
+            }
+            if (in != out) memcpy(out, in, N * sizeof(float));
+            continue;
+        }
+        int32_t sent[4096], back[4096];
+        uint32_t update = c + 1 == a->ch ? a->ch * N : 0;
+        for (uint32_t i = 0; i < N; i++) sent[i] = (int32_t)in[i];
+        aux_ring(a->send, a->count_max, sent, N, c * N, update, true);
+        uint32_t got = aux_ring(a->ret, a->count_max, back, N, c * N, update, false);
+        for (uint32_t i = 0; i < N; i++) out[i] = i < got ? (float)back[i] : 0.0f;
+        static int log = -1;  // LARECOMP_AUX_LOG=1: the level sent to the game and returned by it, every ~2 s
+        if (log < 0) log = getenv("LARECOMP_AUX_LOG") ? 1 : 0;
+        if (log) {
+            double e_in = 0, e_out = 0;
+            for (uint32_t i = 0; i < N; i++) e_in += (double)sent[i] * sent[i];
+            static FILE *cap;  // LARECOMP_AUX_CAPTURE=<file>: channel 0's input and output (float pairs), 400 frames
+            static int cap_frames = -1;
+            if (cap_frames < 0) { const char *f = getenv("LARECOMP_AUX_CAPTURE"); cap_frames = f ? 400 : 0; if (f) cap = fopen(f, "wb"); }
+            if (cap && cap_frames > 0 && c == 0 && (e_in > 1e6 * N || cap_frames < 400)) {  // (from the first loud frame on)
+                for (uint32_t i = 0; i < N; i++) { float pr[2] = {(float)sent[i], out[i]}; fwrite(pr, 4, 2, cap); }
+                if (!--cap_frames) fclose(cap), cap = NULL;
+            }
+            for (uint32_t i = 0; i < N; i++) e_out += (double)out[i] * out[i];
+            static double sin_, sout;
+            static uint32_t frames;
+            sin_ += e_in, sout += e_out;
+            if (++frames % 1000 == 0) {
+                LOG("[audren] aux: ring %u, %u ch, send %llx return %llx: rms in %.1f out %.1f\n", a->count_max, a->ch,
+                    (unsigned long long)a->send, (unsigned long long)a->ret, sqrt(sin_ / (1000.0 * N)), sqrt(sout / (1000.0 * N)));
+                sin_ = sout = 0;
+            }
+        }
+    }
+}
+
 static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
     uint32_t N = r->sample_count;
     for (uint32_t order = 0; order < r->effects; order++) {
@@ -482,6 +576,7 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
                 }
                 continue;
             }
+            if (fx->type == 2 && fx->mix_id == mix_id && fx->order == order) { aux_process(r, fx, m); continue; }
             if (fx->type != 4 || fx->mix_id != mix_id || fx->order != order || !fx->rv.ready) continue;
             int ch = fx->rv.p.ch;
             float *in[6], *out[6];
@@ -970,7 +1065,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         static uint32_t seen_types;
         if (e[0] && e[0] < 32 && !(seen_types & (1u << e[0]))) {
             seen_types |= 1u << e[0];
-            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], e[0] == 4 || e[0] == 1 ? "" : e[0] == 2 ? " (aux: passed through dry)" : " (not implemented)", i,
+            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], e[0] == 4 || e[0] == 1 || e[0] == 2 ? "" : " (not implemented)", i,
                 *(const int32_t *)(e + 4), e[2]);
         }
         if (e[0] && getenv("LARECOMP_AUDIO_LOG")) {
