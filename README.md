@@ -5,9 +5,9 @@ Windows x86-64 program, built on [LAS Recomp](https://github.com/peiikai/LASReco
 
 **Status: playable, work in progress.** The game boots and runs at its own 30 fps at the game's 1920x1080: title,
 menus, the island map, hotel, casino, Photo Paradise and the 3D scenes render (deferred lighting included), audio
-plays and the opening movie plays (it runs when a new vacation starts on a fresh save). Known gaps: the game's
-stencil sampling is only handled in compute shaders (none of
-the game's graphics shaders use it).
+plays (the game's own Aux effect included) and the opening movie plays (it runs when a new vacation starts on a
+fresh save). Known gap: stencil sampling is only handled in compute shaders (none of the game's graphics shaders use
+it).
 A dump of the base application alone is the *Basic Free Edition*, as on the console.
 
 No game files are included or ever committed. You need your own legally obtained copy of the game and the keys from
