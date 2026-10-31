@@ -5,6 +5,7 @@ generated/
 .venv/
 build/
 save/
+save.route-backup/
 cache/
 larecomp.ini
 __pycache__/
