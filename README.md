@@ -8,7 +8,8 @@ menus, the island map, hotel, casino, Photo Paradise and the 3D scenes render (d
 plays (the game's own Aux effect included) and the opening movie plays (it runs when a new vacation starts on a
 fresh save). Known gap: stencil sampling is only handled in compute shaders (none of the game's graphics shaders use
 it).
-A dump of the base application alone is the *Basic Free Edition*, as on the console.
+A dump of the base application alone is the *Basic Free Edition*, as on the console. What has been changed from LAS
+Recomp, the debugging switches and the open work: [docs/CHANGES.md](docs/CHANGES.md).
 
 No game files are included or ever committed. You need your own legally obtained copy of the game and the keys from
 your own console.
