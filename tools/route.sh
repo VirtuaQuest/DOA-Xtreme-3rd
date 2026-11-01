@@ -34,6 +34,10 @@ if [ "$fresh" = 1 ]; then
     [ -d save ] && mv save save.route-backup
 fi
 [ -n "$shots" ] && export LARECOMP_SHOT_AT="$shots"
+# The presses are timed in 30 fps frames: 30 fps unless LARECOMP_FPS says otherwise (not larecomp.ini's fps60); at 60
+# fps their frames and lengths are doubled (screenshot frames are not).
+export LARECOMP_FPS="${LARECOMP_FPS:-30}"
+[ "$LARECOMP_FPS" -ge 60 ] && in=$(echo "$in" | awk -F, -v OFS=, '{for (i = 1; i <= NF; i++) { split($i, p, ":"); $i = p[1] * 2 ":" p[2] ":" p[3] * 2 }; print}')
 LARECOMP_INPUT="$in" tools/run.sh "$secs"
 if [ "$fresh" = 1 ]; then
     rm -rf save

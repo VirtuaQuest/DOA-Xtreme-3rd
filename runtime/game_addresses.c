@@ -9,9 +9,11 @@
 #include "rt.h"
 
 static const GameAddrs ga_v1_0_0 = {0};
+static const GameAddrs ga_v1_0_6 = {0};
 
 static const GameVersion versions[] = {
     {"v1_0_0", "1.0.0", "698FF1807582E71B26C79DA6CC417D9A00000000", &ga_v1_0_0},
+    {"v1_0_6", "1.0.6", "71102550C57D57DB950D16F3EB5AF72E00000000", &ga_v1_0_6},
 };
 
 const GameAddrs *g_ga;

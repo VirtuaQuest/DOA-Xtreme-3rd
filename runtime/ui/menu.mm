@@ -443,6 +443,18 @@ static void tab_display(void) {
         if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
             g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
     }
+    {   // the game's own 3D scene size (runtime/hle/game_hooks.c rt_render3d_size): its render targets are made at boot
+        static const char *r3d[] = {"Original (900p)", "1080p", "1440p", "4K"};
+        if (opt_choice("3D resolution", &g_settings.render3d, r3d, 4, g_default_render3d,
+                       "The resolution the game draws its 3D scenes at, before it scales them to its 1080p screen. "
+                       "Original: the Switch's 1600 x 900. 4K: four times the pixels of 1080p, averaged down - the "
+                       "sharpest, smoothest edges.\n\nTakes effect the next time the game starts."))
+            g_settings.render3d_auto = false;
+    }
+    opt_toggle("60 fps", &g_settings.fps60, false,
+               "Runs the game in its engine's 60 fps mode (the Switch game uses its 30 fps mode): one game step of "
+               "1/60 s per frame, so the game plays at its normal speed, twice as smoothly.\n\nTakes effect the next "
+               "time the game starts.");
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
 #ifdef __APPLE__
         static const char *ups[] = {"Bilinear", "MetalFX"};
@@ -558,8 +570,8 @@ static void tab_quit(float scale, bool in_game) {
         ask = 0;
     const char *lost = in_game ? "\n\nProgress since your last save is lost." : "";
     char d1[200], d2[200];
-    snprintf(d1, sizeof d1, "Leaves the game and goes back to the LAS Recomp start screen.%s", lost);
-    snprintf(d2, sizeof d2, "Closes LAS Recomp.%s", lost);
+    snprintf(d1, sizeof d1, "Leaves the game and goes back to the DOAX3 Recomp start screen.%s", lost);
+    snprintf(d2, sizeof d2, "Closes DOAX3 Recomp.%s", lost);
     opt_begin("##quit", scale);
     opt_section("Quit");
     if (!ask) {

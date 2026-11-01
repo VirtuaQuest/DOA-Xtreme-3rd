@@ -99,8 +99,23 @@ static pthread_cond_t g_nothread_cond = PTHREAD_COND_INITIALIZER;
 // takes the presenting thread's: a frame's busy time is its period minus this.
 __thread uint64_t g_blocked_ns;
 
+// A started thread runs at once on the Switch (a free core, or it preempts a lower priority), so the game may take
+// it as waiting by the time svcStartThread returns. DOAX3's boot does: it starts a worker, kicks it only if the
+// worker already waits for work (0x70002bec70: state 3), then waits for the job unconditionally - a lost kick
+// deadlocks it (the worker has a higher priority than the main thread, so on the Switch it preempts it and is waiting
+// before StartThread returns). A host thread can start many ms late on a busy PC (3 of 4 boots hung while another
+// build ran), so svcStartThread of a thread with a higher priority than the starter's waits until the new thread
+// first blocks, sleeps or yields (or ends), for at most START_SETTLE_NS.
+static pthread_cond_t g_settle_cond = PTHREAD_COND_INITIALIZER;
+#define START_SETTLE_NS 1000000000  // (they settle in 5-40 ms on a busy PC; the 50 ms tried first was still lost once)
+static void thread_settled(KThread *t) {  // caller holds g_klock
+    t->settled = true;
+    pthread_cond_broadcast(&g_settle_cond);
+}
+
 static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
     pthread_cond_t *cv = t_cur ? &t_cur->cond : &g_nothread_cond;
+    if (t_cur && !t_cur->settled) thread_settled(t_cur);
     uint64_t t0 = plat_now_ns();
     bool r = true;
     if (timeout_ns < 0) pthread_cond_wait(cv, &g_klock);
@@ -197,6 +212,7 @@ static void *thread_main(void *arg) {
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
     pthread_mutex_lock(&g_klock);
     t->finished = true;
+    thread_settled(t);
     kernel_signal(&t->obj);
     pthread_mutex_unlock(&g_klock);
     t_cur = NULL;
@@ -689,13 +705,28 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x09: {  // StartThread
         KObject *o = handle_get((uint32_t)x[0]);
         if (!o || o->type != KOBJ_THREAD) { x[0] = R_INVALID_HANDLE; break; }
-        thread_start((KThread *)o);
+        KThread *nt = (KThread *)o;
+        thread_start(nt);
+        if (t_cur && nt->prio < t_cur->prio) {  // (a higher priority: it would preempt the starter)
+            struct timespec ts;
+            deadline(&ts, START_SETTLE_NS);
+            uint64_t t0 = plat_now_ns();
+            pthread_mutex_lock(&g_klock);
+            while (!nt->settled && !g_rt_unwind && pthread_cond_timedwait(&g_settle_cond, &g_klock, &ts) == 0) {}
+            bool settled = nt->settled;
+            pthread_mutex_unlock(&g_klock);
+            uint64_t dt = plat_now_ns() - t0;
+            g_blocked_ns += dt;
+            if (!settled) LOG("[kernel] StartThread %x: still running after %d ms, going on\n", nt->handle, START_SETTLE_NS / 1000000);
+            else if (dt > 5000000) LOG("[kernel] StartThread %x: first wait after %llu ms\n", nt->handle, (unsigned long long)(dt / 1000000));
+        }
         x[0] = R_OK;
         break;
     }
     case 0x0A: longjmp(t_cur->unwind, 1);  // ExitThread: back to thread_main, which signals the thread object
     case 0x0B: {  // SleepThread (in slices of at most 50 ms: a reboot doesn't wait out a long sleep)
         int64_t ns = (int64_t)x[0];
+        if (!t_cur->settled) { pthread_mutex_lock(&g_klock); thread_settled(t_cur); pthread_mutex_unlock(&g_klock); }
         if (ns <= 0) { sched_yield(); break; }
         for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;) {
             uint64_t d = end - now < 50000000 ? end - now : 50000000;

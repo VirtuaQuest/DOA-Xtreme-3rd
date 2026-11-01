@@ -2604,7 +2604,8 @@ static TexBackend *snapshot_image(NvnTexture *t, TexBackend *src) {
 
 // (debug frames) a depth image's depth values as a greyscale PGM, stretched over its own min..max
 static void debug_save_depth(TexBackend *b, const char *path) {
-    if (!b || !b->image || !(b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) || b->format != VK_FORMAT_D32_SFLOAT_S8_UINT) return;
+    if (!b || !b->image || !(b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ||
+        (b->format != VK_FORMAT_D32_SFLOAT_S8_UINT && b->format != VK_FORMAT_D32_SFLOAT)) return;
     uint64_t n = (uint64_t)b->width * b->height;
     VkSpan out = vk_readback(n * 4);
     VkCommandBuffer cb = vk_cmd();
@@ -5045,6 +5046,18 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     if (h && st.spool && tsc < (uint32_t)st.spool->count) smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc]);
     if (st_->shadow)
         shadow_slot_check(stage, st_, i, h, tic, ent, ent && ent->tex ? (naliases ? alias_read(ent->tex) : ent->tex) : NULL, &view);
+    if (st_->shadow && ent && ent->tex && ct_on()) {  // (LARECOMP_COPY_TRACE: the shadow map's depth, once per frame)
+        static uint64_t saved_frame = ~0ull;
+        TexBackend *tb = ent->tex->backend;
+        LOG("[ct] shadow slot t%d stage %d: texture %ux%u, image %ux%u, scale %g %g, fraction %g %g\n", i, stage, ent->tex->width,
+            ent->tex->height, tb ? tb->width : 0, tb ? tb->height : 0, sc[0], sc[1], fr[0], fr[1]);
+        if (saved_frame != renderer_present_count()) {
+            saved_frame = renderer_present_count();
+            char path[96];
+            snprintf(path, sizeof path, "build/shadow_%llu_t%d.pgm", (unsigned long long)saved_frame, i);
+            debug_save_depth(ent->tex->backend, path);
+        }
+    }
     if (!view) view = vk_dummy_view(st_->type);
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_GENERAL};
@@ -5239,6 +5252,58 @@ static uint32_t stencil_slots(int stage) {
     return m;
 }
 
+// (debug) LARECOMP_SHADOW_VIS=1 (with LARECOMP_SHADER_PREP=0): the deferred lighting shader's lit colour becomes its
+// shadow test - the stored depth found by bisecting with depth compares, against the reference: magenta reference
+// clamped to 1 (beyond the far plane), red the compare fails (shadowed), else how far in front of the stored depth
+// the reference is: green < 0.002, blue < 0.02, grey further; unchanged where no lookup ran.
+static char *str_replace1(const char *s, const char *from, const char *to) {
+    const char *p = strstr(s, from);
+    if (!p) return NULL;
+    size_t a = (size_t)(p - s), nf = strlen(from), nt = strlen(to), n = strlen(s);
+    char *o = malloc(n - nf + nt + 1);
+    memcpy(o, s, a);
+    memcpy(o + a, to, nt);
+    memcpy(o + a + nt, p + nf, n - a - nf + 1);
+    return o;
+}
+static void shadow_vis_patch(ShaderInfo *si) {
+    static const char *looks[][3] = {{"r8", "r9", "r7"}, {"r2", "r3", "r9"}};  // (u, v, reference) of the lookups
+    if (!strstr(si->msl, "uniform sampler2DShadow t7;")) return;
+    char *s = strdup(si->msl);
+    for (int i = 0; i < 2; i++) {
+        char look[160], probe[640];
+        snprintf(look, sizeof look, "{ vec4 t = vec4(textureLod(t7, vec3(uvs(vec2(as_f(%s), as_f(%s)), rscale[8]), as_f(%s)), 0.0f));",
+                 looks[i][0], looks[i][1], looks[i][2]);
+        snprintf(probe, sizeof probe,
+                 "{ vec2 suv_ = uvs(vec2(as_f(%s), as_f(%s)), rscale[8]); float sref_ = as_f(%s), lo_ = 0.0f, hi_ = 1.0f;\n"
+                 "      for (int k_ = 0; k_ < 22; k_++) { float m_ = (lo_ + hi_) * 0.5f; if (textureLod(t7, vec3(suv_, m_), 0.0f) > 0.5f) lo_ = m_; else hi_ = m_; }\n"
+                 "      vec4 t = vec4(textureLod(t7, vec3(suv_, sref_), 0.0f));\n"
+                 "      g_sdbg = vec4(sref_, lo_, t.x, 0.0f);",
+                 looks[i][0], looks[i][1], looks[i][2]);
+        for (char *n; (n = str_replace1(s, look, probe));) { free(s); s = n; }
+    }
+    char *s2 = str_replace1(s, "void main()",
+        "vec4 g_sdbg = vec4(-1.0f);\n"
+        "vec4 sdbg_col(vec4 v) {\n"
+        "  if (g_sdbg.x < 0.0f || gl_GlobalInvocationID.x * 2u >= uint(imageSize(t14).x)) return v;\n"
+        "  float d = g_sdbg.y - g_sdbg.x;\n"
+        "  if (g_sdbg.x >= 1.0f) return vec4(8, 0, 8, 1);\n"
+        "  if (g_sdbg.z < 0.5f) return vec4(8, 0, 0, 1);\n"
+        "  return d < 0.002f ? vec4(0, 8, 0, 1) : d < 0.02f ? vec4(0, 0, 8, 1) : vec4(0.3, 0.3, 0.3, 1);\n"
+        "}\n"
+        "void main()");
+    free(s);
+    if (!s2) return;
+    for (char *p; (p = strstr(s2, "imageStore(t14, cs_, sv_)"));) {  // (both stores of the lit colour)
+        char *s3 = str_replace1(s2, "imageStore(t14, cs_, sv_)", "imageStore(t14, cs_, sdbg_col(sv_))");
+        free(s2);
+        s2 = s3;
+        (void)p;
+    }
+    si->msl = s2;
+    LOG("[vk] shadow test visualisation patched into a compute shader\n");
+}
+
 static bool translate_compute(CsProg *cp, const uint8_t *code, size_t max, uint64_t addr, uint32_t smask) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
@@ -5255,6 +5320,7 @@ static bool translate_compute(CsProg *cp, const uint8_t *code, size_t max, uint6
         atomic_store(&cp->p.state, 2);
         return false;
     }
+    if (getenv("LARECOMP_SHADOW_VIS")) shadow_vis_patch(cp->si);
     return true;
 }
 

@@ -1253,7 +1253,7 @@ void ui_window_init(void) {
                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
-    window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow("DOAX3 Recomp", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
@@ -1295,10 +1295,30 @@ void backend_clear_window(void) {
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
 
+// The refresh period of the display the window is on (ns, 0: unknown), for the game's present pacing (objects.c
+// present_pace). Read on this thread (SDL's display calls), at most once a second, so a move to another monitor counts.
+_Atomic uint64_t g_display_period_ns;
+static void display_rate_poll(void) {
+    static uint64_t last;
+    uint64_t now = SDL_GetTicksNS();
+    if (last && now - last < 1000000000ull) return;
+    last = now;
+    const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+    if (!dm) return;
+    double hz = dm->refresh_rate_numerator > 0 && dm->refresh_rate_denominator > 0
+                    ? (double)dm->refresh_rate_numerator / dm->refresh_rate_denominator : dm->refresh_rate;
+    uint64_t p = hz > 1 ? (uint64_t)(1e9 / hz + 0.5) : 0;
+    if (p != atomic_load(&g_display_period_ns)) {
+        atomic_store(&g_display_period_ns, p);
+        LOG("[vk] display %dx%d at %.3f Hz (%d/%d)\n", dm->w, dm->h, hz, dm->refresh_rate_numerator, dm->refresh_rate_denominator);
+    }
+}
+
 int ui_run(void) {
     ui_window_init();
     atomic_store(&ui_ready, true);
     for (;;) {
+        display_rate_poll();
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {

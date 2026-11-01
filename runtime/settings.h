@@ -13,6 +13,9 @@ enum { UPSCALE_BILINEAR = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /
 #define UPSCALE_SHARP UPSCALE_FSR1
 #endif
 enum { AA_OFF = 0, AA_SMAA = 1 };
+// The 3D scene's resolution (runtime/hle/game_hooks.c rt_render3d_size): the game's own 1600x900, or more; the game
+// scales it to its 1080p screen itself (4k: exactly 2x, so 4x supersampling)
+enum { R3D_ORIGINAL = 0, R3D_1080 = 1, R3D_1440 = 2, R3D_2160 = 3 };
 enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3 };
 // Which face button confirms in our own menus (runtime/ui/pad_nav.mm); the game's input is never affected
 enum { MENU_CONFIRM_GAME = 0, MENU_CONFIRM_CONTROLLER = 1 };
@@ -33,6 +36,9 @@ typedef struct {
     int upscaler;        // UPSCALE_*: how a lower internal resolution reaches the window (MetalFX: macOS, FSR 1: Windows)
     bool upscaler_auto;  // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
+    int render3d;        // R3D_*: the 3D scene's resolution
+    bool render3d_auto;  // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"
+    bool fps60;          // the game's 60 fps frame mode instead of its 30 (runtime/hle/game_hooks.c rt_frame_base)
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
@@ -103,6 +109,7 @@ void settings_save(void);
 void settings_resolve_defaults(bool integrated);
 extern int g_default_upscaler;  // UPSCALE_*: what the menu shows as the default
 extern int g_default_res_mode;  // RES_*: likewise
+extern int g_default_render3d;  // R3D_*: likewise
 // An integrated GPU (as settings_resolve_defaults was told): the fixed 1x renders 1280x720 there, what the game itself
 // picked on such a GPU (runtime/nvn/output_scale.c)
 extern bool g_gpu_integrated;

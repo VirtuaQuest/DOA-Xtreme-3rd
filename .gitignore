@@ -9,3 +9,6 @@ save.route-backup/
 cache/
 larecomp.ini
 __pycache__/
+extracted.*/
+generated.*/
+save.v100-backup/

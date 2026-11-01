@@ -1585,7 +1585,7 @@ void ui_window_init(void) {
     // LARECOMP_HIDDEN=1: never shown (automated test runs render off screen without taking the user's focus)
     SDL_WindowFlags wflags = SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
-    window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow("DOAX3 Recomp", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
@@ -1604,6 +1604,7 @@ void ui_window_init(void) {
 }
 
 SDL_Window *ui_window(void) { return window; }
+_Atomic uint64_t g_display_period_ns;  // (objects.c present_pace; not read on macOS yet: 0, the 60 Hz grid)
 bool ui_window_focused(void) { return window && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS); }  // (any thread, for a log)
 void *ui_metal_layer(void) { return (__bridge void *)layer; }
 void *ui_metal_device(void) { return (__bridge void *)dev; }

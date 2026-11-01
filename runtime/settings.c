@@ -42,6 +42,7 @@ Settings g_settings = {
     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
     .upscaler_auto = true,
     .res_auto = true,
+    .render3d_auto = true,
     .livesplit_host = "localhost:16834",
 #ifndef __APPLE__
     .bg_input = true,  // (as before the setting; on macOS it needs Input Monitoring permission, so Off there)
@@ -107,7 +108,9 @@ const char *settings_language_name(void) {
 
 int g_default_upscaler = UPSCALE_SHARP;
 int g_default_res_mode = 1;
+int g_default_render3d = R3D_ORIGINAL;
 bool g_gpu_integrated;
+static const char *const r3d_names[] = {"original", "1080p", "1440p", "4k"};
 
 static const char *res_name(int m) {
     static char n[8];
@@ -123,8 +126,14 @@ void settings_resolve_defaults(bool integrated) {
     // 1x: the game's own target sizes. DOAX3's deferred lighting stores its results from a compute shader (SUST) at
     // the game's pixel coordinates, which scaled targets don't have (image stores aren't rescaled).
     g_default_res_mode = 1;
+    // The 3D scene: 1440p on a dedicated GPU (RTX 3060: ~4 ms of GPU per frame, a full volleyball route at 30 fps).
+    // Not 4K: its render targets don't fit the game's own memory, and the next scene's allocation fails (a null write
+    // after the match's save).
+    g_default_render3d = integrated ? R3D_ORIGINAL : R3D_1440;
     if (g_settings.upscaler_auto) g_settings.upscaler = g_default_upscaler;
     if (g_settings.res_auto) g_settings.res_mode = g_default_res_mode;
+    if (g_settings.render3d_auto) g_settings.render3d = g_default_render3d;
+    LOG("[settings] 3D resolution %s (%s)\n", r3d_names[g_settings.render3d], g_settings.render3d_auto ? "default" : "chosen");
     LOG("[settings] %s GPU: upscaler %s (%s), resolution %s (%s), anti-aliasing %s\n", integrated ? "integrated" : "discrete / other",
         g_settings.upscaler == UPSCALE_BILINEAR ? "bilinear" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "metalfx",
         g_settings.upscaler_auto ? "default" : "chosen", res_name(g_settings.res_mode), g_settings.res_auto ? "default" : "chosen",
@@ -168,6 +177,13 @@ void settings_load(void) {
             g_settings.upscaler_auto = !strcmp(val, "auto");
             if (!g_settings.upscaler_auto) g_settings.upscaler = !strcmp(val, "bilinear") ? UPSCALE_BILINEAR : UPSCALE_SHARP;
             else g_settings.upscaler = g_default_upscaler;
+        }
+        else if (!strcmp(key, "fps60")) g_settings.fps60 = atoi(val) != 0;
+        else if (!strcmp(key, "render3d")) {  // (auto: never chosen, the GPU's default)
+            g_settings.render3d_auto = true;
+            for (int i = 0; i < 4; i++)
+                if (!strcmp(val, r3d_names[i])) g_settings.render3d = i, g_settings.render3d_auto = false;
+            if (g_settings.render3d_auto) g_settings.render3d = g_default_render3d;
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
         else if (!strcmp(key, "inv_keys")) g_settings.inv_keys = atoi(val) != 0;
@@ -241,7 +257,7 @@ void settings_load(void) {
 void settings_save(void) {
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
-    fprintf(f, "# LAS Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
+    fprintf(f, "# DOAX3 Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
@@ -252,6 +268,8 @@ void settings_save(void) {
                                    g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" : "bilinear");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
+    fprintf(f, "render3d = %s\n", g_settings.render3d_auto ? "auto" : r3d_names[g_settings.render3d & 3]);
+    fprintf(f, "fps60 = %d\n", g_settings.fps60);
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "rumble = %d\n", g_settings.rumble);

@@ -63,41 +63,49 @@ static uint64_t base_size(void) {
     return g_base.size;
 }
 
-// n bytes of the base image at off (past its end: zeros)
-static ssize_t base_pread(void *dst_, uint64_t n, uint64_t off) {
-    plat_os_write((uint64_t)(uintptr_t)dst_, n);
-    if (g_base_fd >= 0) return pread(g_base_fd, dst_, n, (off_t)off);
-    uint8_t *dst = dst_;
+// n bytes of a laid-out image L at off (past its end: zeros). fd_of(ctx, i) is file i's open descriptor (<= 0: can't
+// be opened), called with lock held.
+static ssize_t layout_pread(const RomfsLayout *L, int (*fd_of)(void *ctx, int i), void *ctx, pthread_mutex_t *lock,
+                            uint8_t *dst, uint64_t n, uint64_t off) {
     memset(dst, 0, n);
     uint64_t end = off + n;
-    if (off < ROMFS_DATA_START) memcpy(dst, g_base.header + off, (end < ROMFS_DATA_START ? end : ROMFS_DATA_START) - off);
-    uint64_t ta = g_base.tables_off, tb = ta + g_base.tables_size;
+    if (off < ROMFS_DATA_START) memcpy(dst, L->header + off, (end < ROMFS_DATA_START ? end : ROMFS_DATA_START) - off);
+    uint64_t ta = L->tables_off, tb = ta + L->tables_size;
     if (off < tb && end > ta) {
         uint64_t a = off > ta ? off : ta, b = end < tb ? end : tb;
-        memcpy(dst + (a - off), g_base.tables + (a - ta), b - a);
+        memcpy(dst + (a - off), L->tables + (a - ta), b - a);
     }
     // the files overlapping [off, end): the first by binary search, then in order
-    int lo = 0, hi = g_base.nfiles - 1, first = g_base.nfiles;
+    int lo = 0, hi = L->nfiles - 1, first = L->nfiles;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
-        if (g_base.files[mid].start + g_base.files[mid].size > off) first = mid, hi = mid - 1;
+        if (L->files[mid].start + L->files[mid].size > off) first = mid, hi = mid - 1;
         else lo = mid + 1;
     }
-    pthread_mutex_lock(&g_base_lock);
-    for (int i = first; i < g_base.nfiles && g_base.files[i].start < end; i++) {
-        const RomfsLayoutFile *f = &g_base.files[i];
+    pthread_mutex_lock(lock);
+    for (int i = first; i < L->nfiles && L->files[i].start < end; i++) {
+        const RomfsLayoutFile *f = &L->files[i];
         uint64_t a = off > f->start ? off : f->start, b = end < f->start + f->size ? end : f->start + f->size;
         if (a >= b) continue;
-        int fd = base_file_fd(i);
+        int fd = fd_of(ctx, i);
         plat_os_write((uint64_t)(uintptr_t)(dst + (a - off)), b - a);
         if (fd <= 0 || pread(fd, dst + (a - off), b - a, (off_t)(a - f->start)) != (ssize_t)(b - a)) {
-            pthread_mutex_unlock(&g_base_lock);
+            pthread_mutex_unlock(lock);
             LOG("[fs] can't read %s\n", f->path);
             return -1;
         }
     }
-    pthread_mutex_unlock(&g_base_lock);
+    pthread_mutex_unlock(lock);
     return (ssize_t)n;
+}
+
+static int base_fd_of(void *ctx, int i) { (void)ctx; return base_file_fd(i); }
+
+// n bytes of the base image at off (past its end: zeros)
+static ssize_t base_pread(void *dst_, uint64_t n, uint64_t off) {
+    plat_os_write((uint64_t)(uintptr_t)dst_, n);
+    if (g_base_fd >= 0) return pread(g_base_fd, dst_, n, (off_t)off);
+    return layout_pread(&g_base, base_fd_of, NULL, &g_base_lock, dst_, n, off);
 }
 
 static void base_close(void) {
@@ -571,6 +579,115 @@ static Service *open_romfs_storage(void) {
     Storage *st = calloc(1, sizeof *st);
     st->size = base_size();
     return service_new("IStorage(romfs)", storage, st);
+}
+
+// ------------------------------------------------------------------ add-on content (DLC)
+// Each DLC the player has is a folder of its RomFS files, <game files>/aoc/<its data id, 16 hex digits> (beside
+// romfs/; tools/nsp_extract.py puts them there). aoc:u lists them (runtime/services/misc.c) and the game mounts one
+// with OpenDataStorageByDataId: an image laid out like the base one, its bytes read from the files.
+typedef struct {
+    uint64_t id;
+    bool laid_out;
+    RomfsLayout l;
+    int *fds;  // per file: 0 not opened yet, -1 can't be
+    pthread_mutex_t lock;
+    uint64_t reads, bytes;  // (the log: the 1st, 2nd, 4th, ... read)
+} AocImage;
+static AocImage *g_aoc;
+static int g_naoc = -1;  // (-1: the folder not looked at yet)
+static pthread_mutex_t g_aoc_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int aoc_cmp(const void *a, const void *b) {
+    uint64_t x = ((const AocImage *)a)->id, y = ((const AocImage *)b)->id;
+    return x < y ? -1 : x > y;
+}
+
+// <game files>/aoc (the folder romfs/ is in) followed by sub
+static void aoc_path(char *out, size_t n, const char *sub) {
+    size_t dl = strlen(g_romfs_dir);
+    if (dl > 6 && !strcmp(g_romfs_dir + dl - 6, "/romfs")) snprintf(out, n, "%.*s/aoc%s", (int)(dl - 6), g_romfs_dir, sub);
+    else snprintf(out, n, "%s/../aoc%s", g_romfs_dir, sub);
+}
+
+// How many DLC the player has (aoc_id: the i-th one's data id, ascending).
+int aoc_count(void) {
+    pthread_mutex_lock(&g_aoc_lock);
+    if (g_naoc < 0) {
+        g_naoc = 0;
+        char dir[1100];
+        aoc_path(dir, sizeof dir, "");
+        DIR *d = opendir(dir);
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            char *end;
+            uint64_t id = strtoull(e->d_name, &end, 16);
+            if (strlen(e->d_name) != 16 || *end) continue;
+            g_aoc = realloc(g_aoc, (g_naoc + 1) * sizeof *g_aoc);
+            memset(&g_aoc[g_naoc], 0, sizeof *g_aoc);
+            g_aoc[g_naoc++].id = id;
+        }
+        if (d) closedir(d);
+        qsort(g_aoc, g_naoc, sizeof *g_aoc, aoc_cmp);
+        for (int i = 0; i < g_naoc; i++) pthread_mutex_init(&g_aoc[i].lock, NULL);
+        LOG("[aoc] %d add-on contents in %s\n", g_naoc, dir);
+    }
+    pthread_mutex_unlock(&g_aoc_lock);
+    return g_naoc;
+}
+
+uint64_t aoc_id(int i) { return g_aoc[i].id; }
+
+static int aoc_fd_of(void *ctx, int i) {  // (the image's lock held)
+    AocImage *a = ctx;
+    if (!a->fds[i]) {
+        int fd = open(a->l.files[i].path, O_RDONLY);
+        a->fds[i] = fd > 0 ? fd : -1;
+    }
+    return a->fds[i];
+}
+
+static void aoc_storage(Service *s, IpcReq *req, IpcResp *resp) {
+    AocImage *a = s->state;
+    switch (req->cmd) {
+    case 0: {  // Read(offset, size) -> B buffer
+        uint64_t off = IN(uint64_t, 0), size = IN(uint64_t, 8);
+        IpcBuf *b = out_buf(req, 0);
+        if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
+        if (size > b->size) size = b->size;
+        plat_os_write(b->addr, size);
+        if (layout_pread(&a->l, aoc_fd_of, a, &a->lock, (uint8_t *)(uintptr_t)b->addr, size, off) < 0)
+            LOG("[aoc] %016llx: read failed at %llx\n", (unsigned long long)a->id, (unsigned long long)off);
+        uint64_t r = __atomic_add_fetch(&a->reads, 1, __ATOMIC_RELAXED);
+        uint64_t kb = __atomic_add_fetch(&a->bytes, size, __ATOMIC_RELAXED) >> 10;
+        if ((r & (r - 1)) == 0)
+            LOG("[aoc] %016llx reads: %llu (%llu KB)\n", (unsigned long long)a->id, (unsigned long long)r,
+                (unsigned long long)kb);
+        break;
+    }
+    case 4: OUT(uint64_t, 0) = a->l.size; resp_size(resp, 8); break;  // GetSize
+    default: LOG("[aoc] IStorage cmd %u (ok)\n", req->cmd);
+    }
+}
+
+// The DLC with data id `id` as an IStorage (NULL: the player doesn't have it).
+static Service *open_aoc_storage(uint64_t id) {
+    AocImage *a = NULL;
+    for (int i = 0; i < aoc_count(); i++)
+        if (g_aoc[i].id == id) a = &g_aoc[i];
+    if (!a) return NULL;
+    pthread_mutex_lock(&g_aoc_lock);
+    if (!a->laid_out) {
+        char dir[1100], why[256] = "", sub[24];
+        snprintf(sub, sizeof sub, "/%016llx", (unsigned long long)id);
+        aoc_path(dir, sizeof dir, sub);
+        if (romfs_layout(dir, &a->l, why, sizeof why)) {
+            a->fds = calloc(a->l.nfiles ? a->l.nfiles : 1, sizeof *a->fds);
+            a->laid_out = true;
+            LOG("[aoc] %016llx: %d files, %llu bytes\n", (unsigned long long)id, a->l.nfiles, (unsigned long long)a->l.size);
+        } else LOG("[aoc] %016llx: can't lay out %s %s\n", (unsigned long long)id, dir, why);
+    }
+    pthread_mutex_unlock(&g_aoc_lock);
+    return a->laid_out ? service_new("IStorage(aoc)", aoc_storage, a) : NULL;
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
@@ -1118,10 +1235,13 @@ SERVICE("fsp-srv", fsp_srv) {
         break;
     }
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
-    case 202:  // OpenDataStorageByDataId (system data archives)
+    case 202: {  // OpenDataStorageByDataId(storage id, data id): a DLC's data (system data archives aren't available)
+        Service *aoc = open_aoc_storage(IN(uint64_t, 8));
+        if (aoc) { ipc_return_object(resp, aoc); break; }
         LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
         resp->result = MAKE_RESULT(2, 1001);
         break;
+    }
     case 1005: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;  // GetGlobalAccessLogMode
     case 1003: case 1004: case 1006: break;
     case 1011: memset(resp->data, 0, 0x10); resp_size(resp, 0x10); break;

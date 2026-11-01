@@ -1335,7 +1335,16 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (stest && mf > 1) { si.minLod = 0; si.maxLod = VK_LOD_CLAMP_NONE; si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = 16; }
     if (d->compare_mode) {
         si.compareEnable = VK_TRUE;
-        si.compareOp = getenv("LARECOMP_NO_SHADOW") ? VK_COMPARE_OP_ALWAYS : compare_op(d->compare_func);
+        // (test) LARECOMP_NO_SHADOW: 1 every compare passes (lit), 2 none (all shadowed), 3 inverted (only shadows lit)
+        const char *ns = getenv("LARECOMP_NO_SHADOW");
+        si.compareOp = ns ? (atoi(ns) == 2 ? VK_COMPARE_OP_NEVER : atoi(ns) == 3 ? VK_COMPARE_OP_GREATER : VK_COMPARE_OP_ALWAYS)
+                          : compare_op(d->compare_func);
+        static uint32_t logged;  // (each compare function once)
+        if (!(logged & 1u << (d->compare_func & 31))) {
+            logged |= 1u << (d->compare_func & 31);
+            LOG("[vk] depth compare sampler: func %u, filter %u/%u, wrap %u/%u, border %g %g %g %g\n", d->compare_func, d->mag_filter,
+                d->min_filter, d->wrap[0], d->wrap[1], d->border[0], d->border[1], d->border[2], d->border[3]);
+        }
     }
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
     if (border) {

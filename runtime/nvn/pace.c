@@ -78,7 +78,14 @@ static uint64_t stat_pace_over;
 // (game manager +0x4e2, normally 0) is 1 while slow, the game's own value again after. Re-asserted every frame while held.
 // Returns whether the game is held (not when it allows no 30 fps mode itself: its most, +0x4e3, is 0).
 #define FW_MIN_EXTRA_VSYNCS 0x4e2  // (+0x4e3: the most, 1 - its 30 fps mode; +0x4e0 / +0x4e1: the current choice)
+static bool g_held;  // (the hold is applied: pace_end_counter, render thread)
+static bool hold_30_(bool on);
 static bool hold_30(bool on) {
+    bool h = hold_30_(on);
+    __atomic_store_n(&g_held, h, __ATOMIC_RELAXED);
+    return h;
+}
+static bool hold_30_(bool on) {
     static bool held;
     static uint8_t saved;
 #ifdef PACE_TEST  // (tools/test_pace.c: a simulated game manager)
@@ -361,8 +368,13 @@ void pace_frame(void) {
     hold_cadence(hold_30(pace_slow));
 }
 
+// While held, a frame's timing counters report at least PACE_SLOW_NS. Only while the hold is applied: DOAX3 has none
+// (hold_30), and its frame controller reads the counters too - slow-reported frames every one of them after the boot's
+// slow frames set pace_slow (never released there: no gameplay frames counted), so in its 60 fps mode it judged each
+// frame late and added vsyncs (60 / 20 fps flips; game_hooks.c rt_frame_extra drops those as well).
 uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *entry, uint64_t value) {
-    if (!pace_slow || !start_entry || (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
+    if (!pace_slow || !__atomic_load_n(&g_held, __ATOMIC_RELAXED) || !start_entry ||
+        (const uint8_t *)entry - (const uint8_t *)start_entry != 16) return value;
     uint64_t min = start_entry[1] + (uint64_t)((unsigned __int128)PACE_SLOW_NS * 384 / 625);
     return value < min ? min : value;
 }

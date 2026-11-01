@@ -4,8 +4,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "../hle.h"
+#include "../settings.h"
 
 // ---- game state
 int game_in_play(void) { return 0; }  // (not located yet: the menu's save editor and LED health stay off)
@@ -13,6 +16,52 @@ bool world_on_screen(void) { return false; }
 const char *game_level_name(void) { return ""; }
 uint64_t game_camera_zone(void) { return 0; }
 int cheats_link_health(int *max) { if (max) *max = 0; return -1; }
+
+// ---- the 3D scene's resolution (tools/patches.py): the game's render config has levels 1920x1080, 1600x900 and
+// 1280x720 and renders the 3D scene at level 1, then scales it to the 1080p screen itself. This is level 1's size
+// (orig: the game's, width | height << 32): the Video setting "render3d" (settings.h R3D_*).
+// LARECOMP_3D_RES=<w>x<h> (test): any size.
+uint64_t rt_render3d_size(uint64_t orig) {
+    static const uint64_t sizes[] = {0, 1920 | 1080ull << 32, 2560 | 1440ull << 32, 3840 | 2160ull << 32};
+    const char *e = getenv("LARECOMP_3D_RES");
+    unsigned w = 0, h = 0;
+    uint64_t size = g_settings.render3d > R3D_ORIGINAL && g_settings.render3d <= R3D_2160 ? sizes[g_settings.render3d] : orig;
+    if (e && sscanf(e, "%ux%u", &w, &h) == 2 && w >= 320 && h >= 180 && w <= 7680 && h <= 4320)
+        size = w | (uint64_t)h << 32;
+    LOG("[game] 3D resolution %ux%u (the game's: %ux%u)\n", (unsigned)size, (unsigned)(size >> 32), (unsigned)orig,
+        (unsigned)(orig >> 32));
+    return size;
+}
+
+// ---- the frame rate (tools/patches.py FRAME_MODE_*): the engine's frame mode picks its present interval, logic steps
+// per frame and time step together (mode 0: 60 fps, 1 step of 1/60 s; mode 1, the Switch game's: 30 fps, 2 steps;
+// mode 2: 20 fps, 3). Its stores of the mode come here: mode 1 becomes 0 for 60 fps - the same game speed, twice the
+// frames. 60 fps: the Video setting "fps60"; LARECOMP_FPS=30/60 (test) overrides it.
+static bool g_frame_60;  // the 60 fps mode is on (rt_frame_mode turned the game's 30 into it)
+uint32_t rt_frame_mode(uint32_t orig) {
+    static int forced = -1;
+    if (forced < 0) { const char *e = getenv("LARECOMP_FPS"); forced = e ? atoi(e) : 0; }
+    bool fps60 = forced ? forced >= 60 : g_settings.fps60;
+    uint32_t mode = fps60 && orig == 1 ? 0 : orig;
+    static uint32_t last_orig = ~0u, last_mode = ~0u;
+    if (orig != last_orig || mode != last_mode)
+        LOG("[game] frame mode %u -> %u (%s)\n", orig, mode, mode == 0 ? "60 fps" : mode == 1 ? "30 fps" : "20 fps");
+    last_orig = orig, last_mode = mode;
+    g_frame_60 = mode != orig;
+    return mode;
+}
+
+// The vsyncs the engine adds after frames it judged late (tools/patches.py FRAME_EXTRA). In the 60 fps mode they're
+// dropped: its late-time accumulator counts any frame over 97.5% of its 1/59.94 s period as partly late, and our
+// paced frames (exactly 1/60 s apart) built that up until it added two vsyncs every so often - 60 and 20 fps
+// alternating, ~43 fps on average, with a 230+ fps machine. The runtime's present pacing keeps the time instead
+// (runtime/nvn/objects.c present_pace).
+uint32_t rt_frame_extra(uint32_t orig) {
+    if (!g_frame_60 || !orig) return orig;
+    static uint64_t dropped;
+    if ((++dropped & (dropped - 1)) == 0) LOG("[game] 60 fps: extra vsyncs dropped %llu times\n", (unsigned long long)dropped);
+    return 0;
+}
 
 // ---- version, for the shader caches' tag (runtime/nvn/shader_prep.c)
 const char *larecomp_version(void) { return "doax3-dev"; }

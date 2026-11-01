@@ -1,5 +1,6 @@
 // NVN objects, builders, and state objects (everything except command recording).
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -799,7 +800,13 @@ NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
 NVN(nvnWindowSetPresentInterval) {  // (the game's 60 / 30 fps mode: 1 / 2; LARECOMP_LOG_INTERVAL=1 logs each change)
     static int log = -1;
     if (log < 0) log = getenv("LARECOMP_LOG_INTERVAL") != NULL;
-    if (log && WIN->interval != (int)A(1)) LOG("[nvn] present interval %d -> %d\n", WIN->interval, (int)A(1));
+    if (log && WIN->interval != (int)A(1)) {  // (with the guest's frame-pointer chain: who decided)
+        uint64_t fp = c->x[29], st[4] = {0};
+        for (int k = 0; k < 4 && fp; k++) st[k] = ((uint64_t *)(uintptr_t)fp)[1], fp = ((uint64_t *)(uintptr_t)fp)[0];
+        LOG("[nvn] present interval %d -> %d (lr %llx < %llx < %llx < %llx < %llx)\n", WIN->interval, (int)A(1),
+            (unsigned long long)c->x[30], (unsigned long long)st[0], (unsigned long long)st[1], (unsigned long long)st[2],
+            (unsigned long long)st[3]);
+    }
     WIN->interval = (int)A(1);
 }
 NVN(nvnWindowSetCrop) { int *cr = WIN->crop; cr[0] = (int)A(1); cr[1] = (int)A(2); cr[2] = (int)A(3); cr[3] = (int)A(4); }
@@ -822,13 +829,18 @@ NVN(nvnQueueAcquireTexture) {
 // timer of its own (it never asks for the vsync event): without this wait it ran as fast as the PC could draw
 // (300+ fps, its animations and cutscenes sped up with it). Each present waits for its slot on a 60 Hz grid; a frame
 // late by more than a slot starts the grid over (no catching up). LARECOMP_PRESENT_PACE=0: off (uncapped).
+// A display within 0.5% of 60 Hz (59.94 Hz panels) sets the grid instead: at 60.000 the frames gained one on it every
+// ~17 s, which the mailbox swapchain dropped (a hitch); the game runs that 0.1% slower instead.
 static void present_pace(int interval) {
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_PRESENT_PACE"); on = !e || atoi(e) != 0; }
     if (!on || interval <= 0) return;
     if (interval > 4) interval = 4;
     static uint64_t next;
-    uint64_t period = 16666667ull * (uint64_t)interval, now = plat_now_ns();
+    extern _Atomic uint64_t g_display_period_ns;  // (device.c, metal.m: 0 unknown)
+    uint64_t vsync = atomic_load(&g_display_period_ns);
+    if (vsync < 16583334 || vsync > 16750000) vsync = 16666667;
+    uint64_t period = vsync * (uint64_t)interval, now = plat_now_ns();
     if (!next || now > next + period) next = now;
     else if (next > now) plat_sleep_until_ns(next);
     next += period;

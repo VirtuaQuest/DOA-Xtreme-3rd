@@ -42,6 +42,7 @@ struct KThread {
     // in-place reboot (kernel_stop_threads): thread_main's setjmp point, where the thread unwinds to and ends
     jmp_buf unwind;
     bool started, finished;
+    bool settled;          // ran until its first kernel wait, sleep or yield, or ended (g_klock): svcStartThread waits for it
     KThread *anext;        // every thread of this boot (g_klock)
     // (diagnostics: kernel_dump_threads) when the current kernel wait began; the handles of a WaitSynchronization
     uint64_t wait_since;

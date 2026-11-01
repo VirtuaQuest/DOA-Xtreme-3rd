@@ -539,6 +539,10 @@ def main():
         HOOKS, PATCHES = patches.HOOKS, patches.PATCHES
         label, build_id = game_addresses.VERSIONS[version]
         print(f'{args.name}: game version {label} (build {build_id[:16]}), address table {version}', file=sys.stderr)
+    elif args.name == 'game':  # DOAX3: its patch sites are found by their instructions (tools/patches.py)
+        import patches
+        PATCHES = patches.find(m)
+        print(f'{args.name}: patches at ' + ', '.join(f'{a:#x}' for a in sorted(PATCHES)), file=sys.stderr)
     starts = m.boundaries()
     hle = {}
     if args.hle and os.path.exists(args.hle):
