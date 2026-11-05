@@ -19,6 +19,7 @@
 #include "gamelib.h"
 #include "paths.h"
 #include "platform.h"
+#include "settings.h"
 
 static char g_root[1024], g_start[1024], g_exe_dir[1024];
 
@@ -789,4 +790,44 @@ void rt_window_icon(SDL_Window *w) {
     if (!rt_resource("icon.png", NULL, p, sizeof p)) return;
     SDL_Surface *s = SDL_LoadPNG(p);
     if (s) SDL_SetWindowIcon(w, s), SDL_DestroySurface(s);
+}
+
+// control.nacp starts with 16 titles (0x200 bytes of name, 0x100 of publisher), American English first: the first
+// one set, as the console's home menu would show it in English
+const char *rt_game_title(void) {
+    extern const char *g_romfs_dir;
+    static char title[0x201];
+    if (title[0]) return title;
+    snprintf(title, sizeof title, "DEAD OR ALIVE Xtreme 3 Scarlet");
+    size_t n = g_romfs_dir ? strlen(g_romfs_dir) : 0;  // (<game folder>/romfs)
+    if (n < 5 || strcmp(g_romfs_dir + n - 5, "romfs")) return title;
+    char p[1100];
+    snprintf(p, sizeof p, "%.*scontrol/control.nacp", (int)(n - 5), g_romfs_dir);
+    FILE *f = fopen(p, "rb");
+    if (!f) return title;
+    char name[0x200];
+    for (int i = 0; i < 16; i++) {
+        if (fseek(f, i * 0x300L, SEEK_SET) || fread(name, 1, sizeof name, f) != sizeof name) break;
+        if (name[0]) { memcpy(title, name, sizeof name); title[0x200] = 0; break; }
+    }
+    fclose(f);
+    return title;
+}
+
+void rt_window_apply_mode(SDL_Window *w) {
+    SDL_DisplayMode m, *mode = NULL;
+    if (g_settings.fullscreen && g_settings.fullscreen_exclusive) {
+        SDL_DisplayID d = SDL_GetDisplayForWindow(w);
+        const SDL_DisplayMode *desk = SDL_GetDesktopDisplayMode(d);
+        int fw = g_settings.window_w > 0 ? g_settings.window_w : desk ? desk->w : 0;
+        int fh = g_settings.window_h > 0 ? g_settings.window_h : desk ? desk->h : 0;
+        // (0 Hz: the desktop's refresh rate)
+        if (fw > 0 && SDL_GetClosestFullscreenDisplayMode(d, fw, fh, 0.0f, false, &m)) mode = &m;
+        else fprintf(stderr, "[window] no display mode near %dx%d: borderless instead (%s)\n", fw, fh, SDL_GetError());
+    }
+    SDL_SetWindowFullscreenMode(w, mode);
+    SDL_SetWindowFullscreen(w, g_settings.fullscreen);
+    if (!g_settings.fullscreen) fprintf(stderr, "[window] windowed\n");
+    else if (mode) fprintf(stderr, "[window] fullscreen %dx%d at %.2f Hz\n", mode->w, mode->h, mode->refresh_rate);
+    else fprintf(stderr, "[window] borderless fullscreen\n");
 }

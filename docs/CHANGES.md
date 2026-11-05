@@ -129,8 +129,14 @@ Newest work is at the bottom of each section; the commits are on `main`.
 | `menus` | existing | title, hotel room, casino | ~160 s |
 | `volleyball` | fresh | opening movie, Kasumi's arrival, Niki Beach, Beach Volleyball | ~420 s |
 | `relax` | fresh | as `volleyball`, then the shower scene, evening, night | ~330 s |
+| `momiji` | fresh | as `relax`, with Momiji picked on the character select | ~330 s |
+| `select` | fresh | the opening, then the character select screen left idle | ~190 s |
+| `select-walk` | fresh | the character select, right pressed every 60 frames (who is where) | ~200 s |
 
 Fresh-save routes move `save/` to `save.route-backup/` and put it back afterwards.
+
+Your keyboard, mouse and controllers work during a route, so you can take over or help. A press of yours shifts the
+route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
 
 ## Update 1.0.6 and DLC
 
@@ -198,14 +204,37 @@ Fresh-save routes move `save/` to `save.route-backup/` and put it back afterward
   present pacing keeps time. The cause turned out to be the frame pacer inherited from LAS Recomp (see
   "Frame pacing fixes" below): with it fixed, the game asks for 2 extra vsyncs in a 100 s run instead of thousands;
   the drop stays as a safety net.
-- **Setting:** `fps60` in larecomp.ini and Video > Rendering > "60 fps". It applies at the next start. Off by default.
-  `LARECOMP_FPS=30/60` overrides it (test).
+- **The game's step** (GAME_STEP, `rt_game_step`): with only the frame mode changed, the game still ran 2x fast.
+  - **Found by:** a 30 fps run and a 60 fps run of the relax route, compared shot by shot (`LARECOMP_SHOT_SIZE`
+    series, aligned per half second of game time). The title camera and Kasumi's arrival cutscene ran at twice the
+    speed.
+  - **Cause:** the main update (0x7000297ec0) hands every system it updates a float step in 30 fps frames, 1.0 a frame
+    (0x700087cb6c, read through 0x7000a7fdb8 by 82 functions). It isn't derived from the frame mode. A memory diff of
+    the two runs found it (`LARECOMP_DUMP_MEM`), along with a steady-counter scan (`LARECOMP_COUNTER_SCAN`) and the
+    function writing one of those counters (`LARECOMP_WATCH_ADDR`).
+  - **Patch:** the update loads the step's address once a frame, before any system runs. That load goes through
+    `rt_game_step`, which halves the step in the 60 fps mode. Any value the game stores itself is halved the next
+    frame. The game never wrote it in the volleyball and relax routes (`LARECOMP_PEEK`).
+  - **Result:** the comparison runs at the same speed throughout (rate 1.00), with the cutscenes, the title camera and
+    the opening. The character select's backgrounds change every 10 s in both modes (it went with the step, too: the
+    "UI timers" noted before were this).
+- **Setting:** `fps60` in larecomp.ini, Video > Rendering > "60 fps", or the launcher's "60 fps" box. It applies at
+  the next start. Off by default. `LARECOMP_FPS=30/60` overrides it (test).
 - **Result** (RTX 3060, 1440p 3D): a locked 60 fps through the menus and a 7-minute run (186 of ~200 two-second
   windows at 60.0; dips only at loads). The game uncapped runs at 230-250 fps, worst frame 8 ms.
-- **Known difference:** some UI timers count frames, not game time. The character select's rotating backgrounds
-  change about twice as often. That's likely the PS4 game's own 60 fps pace. Engine-timed content (the boot logos)
-  takes the same time as at 30 fps.
 - `LARECOMP_LOG_INTERVAL=1` now logs the guest call stack of each present-interval change.
+
+## Worker handshake race (`tools/patches.py` WORKER_KICK, `rt_worker_state`)
+
+- **Symptom:** the game froze now and then with a `[hang]` dump: the main thread and a worker (priority 34) each in one
+  wait since the same millisecond. Twice in about 30 runs, both in light scenes (frames 3469 and 3734, during the
+  opening movie and just after it), before any girl's model is loaded.
+- **Cause:** the worker (1.0.6 0x70002bebd0) runs its job in state 1, sets state 2 and signals the main thread, then
+  sets state 3 and waits. The main thread's kick (0x70002bec70) wakes it only in state 3, and then waits for it
+  regardless. Woken in the gap, the main thread can kick too early: skipped, and both sleep for ever. On the Switch the
+  worker's higher priority on a shared core closes that gap.
+- **Fix:** the kick's load of the state asks the runtime, which waits out state 2 (at most 1 s). The log's
+  `[game] worker handshake` line counts how often it did.
 
 ## Boot deadlock on a busy PC (`runtime/kernel.c` svcStartThread)
 
@@ -249,6 +278,94 @@ cast none, by the game's design (they aren't in the map).
 The window title, message boxes, crash explanations and menu texts said "LAS Recomp"; they say "DOAX3 Recomp" now,
 and the wrong-version explanation names 1.0.0 and 1.0.6.
 
+## Launcher, display modes, window title and icon
+
+- **Window title:** the game's own name from `extracted/control/control.nacp` (`rt_game_title`, `runtime/paths.c`),
+  "DEAD OR ALIVE Xtreme 3 Scarlet".
+- **Icon:** the game's own Switch home menu icon, `extracted/control/icon_AmericanEnglish.dat` (a 256x256 JPEG).
+  - `tools/make_icon.py` turns it into `build/icon/icon.ico` (16 to 256 px).
+  - Below 32 px the whole picture is a blur, so those sizes show a crop of the cover girl's face (Misaki).
+  - The Makefile builds it into both exes. SDL gives the game's window the exe's first icon.
+  - It comes from your game files, so it is never committed. Without `extracted/control`, the exes have no icon.
+- **Display modes** (`rt_window_apply_mode`, `runtime/paths.c`): `fullscreen_mode = borderless | exclusive` in
+  larecomp.ini. Borderless is SDL's desktop fullscreen, as before. Exclusive switches the display to the closest
+  mode to `window_size` at the desktop's refresh rate. `window_size = WxH | auto` is also the window's size when
+  windowed (auto: 1280x720). F11 and the menu's Fullscreen toggle use the chosen mode.
+- **Launcher** (`launcher/launcher.c`, `build/DOAX3Launcher.exe`, Win32, no extra libraries): display mode,
+  resolution (the primary display's modes) and 3D resolution, written to larecomp.ini (other lines kept), then
+  starts the game as `tools/run.sh` does: the data folder (the one with `extracted/`, next to the launcher or above
+  it) as working directory and `LARECOMP_DATA_ROOT`, MSYS2's `ucrt64/bin` on PATH when SDL3.dll isn't next to the
+  program, and the log in `doax3.log`.
+
+## Mods (`runtime/mods.c`, `tools/mods/`, [MODDING.md](MODDING.md))
+
+- **Loader:** `mods/<mod>/romfs/<path>` replaces the game file `<path>`, named as the packages' indexes name it.
+  - `romfs_layout` asks `mods_source` for each file; a replaced file is served from pieces (`RomfsSource`: memory, a
+    host file range, or zeros) by `layout_pread` (`romfs_source_read`).
+  - **Loose files** (sound banks, movies) are served from the mod in their place.
+  - **Packed files:** the package's `package_data.bin` and `data_*.lnk` are served as changed copies. The replacement
+    is appended past the archive's end (at its 0x800 alignment), and the archive entry and index record are pointed at
+    it, uncompressed, with the new size.
+  - The base game and the DLC images both go through it.
+  - Folders starting with `_` are off; `LARECOMP_NO_MODS=1` turns all mods off.
+- **Formats** (`tools/mods/`):
+  - `ktpkg.py`: packages (`pkginfo` / `btif` index; `b0xx` archives with 16-byte-aligned zlib chunks).
+  - `ktss.py`: voice banks (G1L of KTSS streams: Opus in Nintendo's packet framing, 48 kHz mono, 240-byte CBR
+    frames, restricted-low-delay mode). Encoded with libopus via ctypes.
+  - `kwb.py`: short-sound banks (XWSFILE of KWBN banks: DSP ADPCM, 24 kHz, variants). Our own DSP encoder:
+    least-squares predictors clustered into 8.
+  - All 16039 index records match their archive entries, and the G1L / XWS files rebuild byte-identical.
+- **Checked in game:**
+  - Kasumi with Ayane's face and hair, from four packed files: the arrival scene shows them.
+  - Her short sounds (all three banks) replaced by a tone: it plays during the volleyball match. A first version
+    appended the new data and kept the old (banks 1.8x and 2.1x their size): the game then hung on the loading
+    screen before the match. `kwb.Bank.build` now lays the data out again, and the tool warns about banks bigger
+    than the game's. A dialogue bank 1.6x its size (4 s per line) played in full: those are streamed.
+  - Kasumi's 391 voice lines replaced by a 1.5 kHz tone: a capture with `LARECOMP_AUDIO_WAV` has the tone exactly
+    where she speaks.
+- **Models** (`tools/mods/tmc.py`; `model-export` / `model-import`):
+  - TMC + TMCL go to glTF, with every submesh as a mesh `<object>#<n>`, the node tree as a skin, 12 weights and
+    textures as PNG. The way back rebuilds the vertex / index buffers, the counts, ranges and layouts, and the bounds
+    of the replaced submeshes.
+  - Round trip: the TMC comes back byte-identical, the vertices to half-float rounding, and it looks the same in game
+    (hair and face).
+  - Unrigged or foreign-rigged meshes copy their weights from the nearest original vertex; `--rigid` puts every
+    vertex on the main bone instead.
+  - `--only-given` hides the other submeshes with one zero-area triangle each.
+  - Checked in game: a generated custom mesh with its own texture replaced Kasumi's hair.
+  - **Found on the way:**
+    - The GeoDecl stride is at +0x44.
+    - An empty submesh crashes the game.
+    - Triangles are counter-clockwise, as in glTF.
+    - Textures are linear G1T: BC1, or BC7 (encoded here in mode 6).
+  - **Corrected:** the first version read node names from +0x60, not +0x50, which cut long names short;
+    the "hair reuses bone names" note above came from that. It also missed two things:
+    - each object's bone palette: a vertex's bone numbers index it, not the node list;
+    - each object's node space: the face's eyes are stored relative to the head, the hair's depth layer in the face
+      model's space.
+    Export and import now handle all three (the round trip keeps every vertex's bones and weights exactly). Exports
+    made with the old version must be redone.
+  - `--hide` (named submeshes), `--material-colour` (a material's `MtrCol` row: a hair's highlight),
+    `--hold-from-colour` (vertex colour red = held to the head). Weight copy blends the 4 nearest original vertices by
+    distance and uses a k-d tree (a 45k-vertex hair model: 10 min -> 24 s).
+  - The BC7 encoder also tries mode 5 for blocks whose alpha varies, which keeps alpha's own endpoints and indices,
+    and keeps whichever is closer. Checked bit-exact against `texture2ddecoder`.
+  - `tmc.move_bones`: moves bones in HieLay, GlblMtx, BnOfsMtx and the `ACSCLS` physics chains (start, node offsets,
+    spring rest lengths; the format is in its docstring). `tmc.chain_swing`: a chain's per-node swing values. `model-import` takes a `parts_hook` for scripts that change
+    the parts and skeleton before the rebuild.
+  - `--copy-k N`: how many original vertices a copied weight blends (default 4).
+  - `--alpha-coverage CUT`: smaller mips keep the full-size image's coverage above an alpha cutoff.
+    `--material-colour` takes `*` to keep a value.
+  - `ktss.py` also looks for libopus in MSYS2: a static `ffmpeg` first on the PATH has no DLLs beside it, which stopped
+    `voice-unpack` and `voice-pack`.
+  - `WGT_zdmodel` (the hair's depth layer): fewer, double, hidden and fully replaced versions (up to 9,267 vertices)
+    all load through the relax and menus routes. The hang blamed on replacing it was the worker handshake race ("Worker
+    handshake race" below).
+- **UI textures** (`tools/mods/kslt.py`; `portraits-*`, `kslt-*`): KSLT packs, linear BC3 / RGBA8, with a BC3 encoder.
+  Each girl's character select picture (`chara_<girl>`), profile card (`status_<girl>`), icons and name plates are
+  replaced in every language's pack. Checked in game on the character select.
+- **Not done:** subtitles, body skin (`TEXCHL`), new materials and submeshes.
+
 ## Debugging switches (environment variables)
 
 Added in this project:
@@ -270,6 +387,11 @@ Added in this project:
 | `LARECOMP_SHADOW_VIS=1` | (with `LARECOMP_SHADER_PREP=0`) left half of the lit image shows the shadow test: red shadowed, magenta beyond the far plane, green / blue / grey lit by how far in front |
 | `LARECOMP_NO_SHADOW=1` / `2` / `3` | shadow compares always pass / never pass / inverted |
 | `LARECOMP_COPY_TRACE=<frame>` | now also saves the shadow map's depth (`build/shadow_<frame>_t<slot>.pgm`) and logs its size and scales |
+| `LARECOMP_SHOT_SIZE=<w>x<h>` | game-image screenshots drawn at that size (with `LARECOMP_SCREENSHOT_EVERY` / `_FROM`: long series that stay small) |
+| `LARECOMP_DUMP_MEM=<frame>:<lo>:<hi>:<file>` | guest memory [lo, hi) (hex) saved at that frame |
+| `LARECOMP_COUNTER_SCAN=<frame>` | logs the floats that change by the same step every frame from that frame on (`[scan]`), in the game's globals and heap |
+| `LARECOMP_PEEK=<addr>[,...]` | logs those floats whenever they change (`[peek]`) |
+| `LARECOMP_NO_MODS=1` | no mods |
 
 Inherited from LAS Recomp and used here:
 

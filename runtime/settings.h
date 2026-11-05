@@ -31,7 +31,9 @@ extern const char *const g_language_names[N_LANGUAGES];  // for the menu ("Auto"
 typedef struct {
     int aspect;          // ASPECT_*: unlocked = fill the window (wider/taller views), original = 16:9 with bars
     bool fullscreen;
-    int res_mode;        // RES_MATCH, 1..4 (N x the Switch's 1080p), RES_DYNAMIC, RES_Q75/50/25 (share of the display)
+    bool fullscreen_exclusive;  // fullscreen in a display mode of window_w x window_h; else borderless at the desktop's size
+    int window_w, window_h;     // the window's size (and the exclusive mode's), 0 = the default (1280x720 / the desktop's)
+    int res_mode;       // RES_MATCH, 1..4 (N x the Switch's 1080p), RES_DYNAMIC, RES_Q75/50/25 (share of the display)
     bool res_auto;       // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"
     int upscaler;        // UPSCALE_*: how a lower internal resolution reaches the window (MetalFX: macOS, FSR 1: Windows)
     bool upscaler_auto;  // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"

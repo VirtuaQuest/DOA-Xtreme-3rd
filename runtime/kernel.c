@@ -205,6 +205,11 @@ void rt_unwind_point(void) {
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
+    {
+        char name[32];
+        snprintf(name, sizeof name, "guest %u p%d%s", t->handle, t->prio, t->is_main ? " main" : "");
+        plat_thread_name(name);
+    }
     plat_thread_guest(t->prio);
     if (t->is_main) plat_thread_perf_core(PLAT_PERF_GAME);  // (the game's frame runs here)
     crash_handler_install();

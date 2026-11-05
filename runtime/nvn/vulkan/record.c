@@ -161,6 +161,7 @@ static inline void *after(const void *args, size_t args_size) { return (uint8_t 
 // ---- the thread
 static void *run(void *arg) {
     (void)arg;
+    plat_thread_name("recorder");
     plat_thread_perf_core(PLAT_PERF_RENDER);  // (Windows hybrid CPUs: the performance cores, as the render thread)
     rq_watch(NULL, 0);                        // (the hang dump knows this thread)
     uint64_t t = 0;

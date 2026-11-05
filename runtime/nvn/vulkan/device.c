@@ -1088,6 +1088,21 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             if (*next == ',') next++;
         }
     }
+    { extern void counter_scan_frame(uint64_t frame); counter_scan_frame(frame); }  // (LARECOMP_COUNTER_SCAN: runtime/counter_scan.c)
+    {   // LARECOMP_DUMP_MEM=<frame>:<lo>:<hi>:<file> (debug, hex addresses): guest memory [lo, hi) at that frame, to
+        // compare runs (e.g. the game's globals at 30 and at 60 fps)
+        static const char *e;
+        static int init;
+        if (!init) init = 1, e = getenv("LARECOMP_DUMP_MEM");
+        unsigned long long at, lo, hi;
+        char file[512];
+        if (e && sscanf(e, "%llu:%llx:%llx:%511s", &at, &lo, &hi, file) == 4 && frame == at && hi > lo) {
+            FILE *f = fopen(file, "wb");
+            size_t n = f ? fwrite((const void *)(uintptr_t)lo, 1, hi - lo, f) : 0;
+            if (f) fclose(f);
+            LOG("[debug] guest memory %llx-%llx at frame %llu: %zu bytes to %s\n", lo, hi, at, n, file);
+        }
+    }
     static long shot_from = -1;
     if (shot_from < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_FROM"); shot_from = e ? atol(e) : 0; }
     if (shot_every && frame % shot_every == 0 && (long)frame >= shot_from) {
@@ -1243,6 +1258,7 @@ void ui_window_init(void) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     input_load_user_mappings();
     int win_w = 1280, win_h = 720;
+    if (g_settings.window_w > 0) win_w = g_settings.window_w, win_h = g_settings.window_h;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
@@ -1253,11 +1269,12 @@ void ui_window_init(void) {
                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
-    window = SDL_CreateWindow("DOAX3 Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow(rt_game_title(), win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
+    if (g_settings.window_w > 0) SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
-    if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) SDL_SetWindowFullscreen(window, true);
+    if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) rt_window_apply_mode(window);
     create_instance();
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();

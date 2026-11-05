@@ -14,6 +14,7 @@ uint64_t g_native_window;
 
 static void *vsync_thread(void *arg) {
     (void)arg;
+    { extern void plat_thread_name(const char *); plat_thread_name("vsync"); }
     const uint64_t period = 16666667;
     plat_thread_realtime(period);
     plat_thread_perf_core(PLAT_PERF_VSYNC);

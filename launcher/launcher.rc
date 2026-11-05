@@ -1,0 +1,6 @@
+// The launcher's manifest: version 6 common controls (the system's own look) and system DPI awareness
+1 24 "launcher.manifest"
+// The icon (the Makefile's build/icon/icon.ico)
+#ifdef HAVE_ICON
+1 ICON "icon.ico"
+#endif

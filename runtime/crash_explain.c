@@ -8,6 +8,7 @@
 #include <ctype.h>
 
 #include "game_addresses.h"
+#include "mods.h"
 #include "platform.h"
 #include "rt.h"
 
@@ -64,7 +65,12 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
     static const char *const report = "Please report it as a GitHub issue and attach the log file below. "
                                       "Your progress up to your last save or autosave is safe.";
     char head[160], what[400];
-    if (rt_romfs_files >= 0 && rt_romfs_files < ROMFS_FILES) {
+    if (mods_count() > 0) {  // (a mod's files don't match the game's: not "damaged" game files)
+        snprintf(head, sizeof head, "The game stopped while mods were loaded");
+        snprintf(what, sizeof what, "%d mods replaced %d of the game's files. Turn the mods off (rename their folders in "
+                 "mods/ to start with _) and start again: if the game then runs, one of the mods is the cause.",
+                 mods_count(), mods_files());
+    } else if (rt_romfs_files >= 0 && rt_romfs_files < ROMFS_FILES) {
         snprintf(head, sizeof head, "Your game files are incomplete");
         snprintf(what, sizeof what, "DOAX3 Recomp found %d of the game's %d files, and the game stopped when it needed "
                  "one that's missing. Copy your game files again so none are missing, then set them up again on the "

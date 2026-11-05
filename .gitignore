@@ -12,3 +12,17 @@ __pycache__/
 extracted.*/
 generated.*/
 save.v100-backup/
+/mods/
+mod_work/
+build_*/
+# game files, keys and model sources: never commit
+*.nsp
+*.xci
+*.nca
+*.nsz
+*.keys
+*.blend
+*.tik
+*.cert
+# setup's own
+setup/settings.json

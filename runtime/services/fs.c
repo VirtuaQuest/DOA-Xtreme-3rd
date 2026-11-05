@@ -87,8 +87,15 @@ static ssize_t layout_pread(const RomfsLayout *L, int (*fd_of)(void *ctx, int i)
         const RomfsLayoutFile *f = &L->files[i];
         uint64_t a = off > f->start ? off : f->start, b = end < f->start + f->size ? end : f->start + f->size;
         if (a >= b) continue;
-        int fd = fd_of(ctx, i);
         plat_os_write((uint64_t)(uintptr_t)(dst + (a - off)), b - a);
+        if (f->src) {  // (a mod's replacement: runtime/mods.c)
+            if (romfs_source_read(f->src, dst + (a - off), b - a, a - f->start) < 0) {
+                pthread_mutex_unlock(lock);
+                return -1;
+            }
+            continue;
+        }
+        int fd = fd_of(ctx, i);
         if (fd <= 0 || pread(fd, dst + (a - off), b - a, (off_t)(a - f->start)) != (ssize_t)(b - a)) {
             pthread_mutex_unlock(lock);
             LOG("[fs] can't read %s\n", f->path);

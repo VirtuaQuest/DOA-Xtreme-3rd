@@ -4,6 +4,9 @@
 #   menus       existing save: title -> hotel room -> casino (the locked Roulette game)        ~160 s
 #   volleyball  fresh save: opening movie, Kasumi's arrival, Niki Beach -> Beach Volleyball     ~420 s
 #   relax       fresh save: as volleyball but Relax (the shower scene), evening, night           ~330 s
+#   momiji      fresh save: as relax, with Momiji picked on the character select                ~330 s
+#   select      fresh save: the opening, then the character select screen left idle            ~190 s
+#   select-walk fresh save: the character select, RIGHT every 60 frames (who is where)          ~200 s
 # Fresh-save routes move save/ aside first and put it back afterwards (the game autosaves).
 # Frames are presented frames (30 fps); load times shift them a little between runs.
 cd "$(dirname "$0")/.." || exit 1
@@ -26,6 +29,18 @@ relax)
     fresh=1
     in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 9500)"
     : "${secs:=330}" ;;
+momiji)  # (as relax, but Momiji: RIGHT once on the character select, ready from ~frame 3960, then on)
+    fresh=1
+    in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 3740),4000:RIGHT:8$(seq_presses A 4100 120 9500)"
+    : "${secs:=330}" ;;
+select)  # (the character select screen left idle from ~frame 3800: its rotating backgrounds, for 60 fps checks)
+    fresh=1
+    in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 3740)"
+    : "${secs:=190}" ;;
+select-walk)  # (the character select, then RIGHT every 60 frames from 3900: screenshot each to see who is where)
+    fresh=1
+    in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 3740)$(seq_presses RIGHT 3900 60 4500)"
+    : "${secs:=200}" ;;
 *)
     sed -n '2,9p' "$0"; exit 1 ;;
 esac
@@ -37,6 +52,10 @@ fi
 # The presses are timed in 30 fps frames: 30 fps unless LARECOMP_FPS says otherwise (not larecomp.ini's fps60); at 60
 # fps their frames and lengths are doubled (screenshot frames are not).
 export LARECOMP_FPS="${LARECOMP_FPS:-30}"
+# Your own keyboard, mouse and controllers work during a route too, so you can take over or help (the runtime ignores
+# them in scripted runs unless told otherwise). A press of yours shifts the route's timing: LARECOMP_NO_USER_INPUT=1
+# keeps a run strictly scripted.
+export LARECOMP_NO_USER_INPUT="${LARECOMP_NO_USER_INPUT:-0}"
 [ "$LARECOMP_FPS" -ge 60 ] && in=$(echo "$in" | awk -F, -v OFS=, '{for (i = 1; i <= NF; i++) { split($i, p, ":"); $i = p[1] * 2 ":" p[2] ":" p[3] * 2 }; print}')
 LARECOMP_INPUT="$in" tools/run.sh "$secs"
 if [ "$fresh" = 1 ]; then

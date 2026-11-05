@@ -618,6 +618,43 @@ static void upload_pending(TexBackend *b) {
 }
 
 uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_watch_skips;
+uint64_t prof_tex_partial, prof_tex_partial_bytes;
+
+// A dynamic linear texture the game rewrites in part each frame (DOAX3: three 1024x1024 RGBA8 textures used in turn,
+// ~43 of their 1024 rows written a frame; each row is one 4 KB page): only the rows on pages the CPU wrote since the
+// last check are copied, instead of hashing and uploading all 4 MB. One level, one layer, uncompressed and stored as
+// the image's format. since: the write generation of the last check. false: not such a texture (the full path).
+// LARECOMP_TEX_PARTIAL=0: off.
+static bool upload_written_rows(NvnTexture *t, TexBackend *b, const FormatInfo *fi, VkFmt mf, uint32_t since) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_TEX_PARTIAL") || atoi(getenv("LARECOMP_TEX_PARTIAL")) != 0;
+    if (!on || !(t->flags & 0x10) || t->layout.levels > 1 || (t->layout.layers ? t->layout.layers : 1) > 1 ||
+        b->depth > 1 || b->astc_bw || b->tp > 0 || fi->bw != 1 || fi->bh != 1 || b->format != mf.vf ||
+        (mf.expand_rgb && fi->bpb == 3) || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT))
+        return false;
+    extern bool vk_range_written(uint64_t addr, uint64_t size, uint32_t since);
+    LevelLayout l = tegra_level(&t->layout, 0);
+    uint32_t row = l.wb * fi->bpb, w = l.w < level_w(b, 0) ? l.w : level_w(b, 0), h = l.h < level_h(b, 0) ? l.h : level_h(b, 0);
+    uint64_t stride = t->stride ? t->stride : row;
+    const uint8_t *base = (const uint8_t *)(uintptr_t)t->addr + l.offset;
+    VkCommandBuffer cb = NULL;
+    for (uint32_t y = 0; y < h;) {
+        if (!vk_range_written((uint64_t)(uintptr_t)(base + y * stride), row, since)) { y++; continue; }
+        uint32_t y0 = y;
+        while (y < h && vk_range_written((uint64_t)(uintptr_t)(base + y * stride), row, since)) y++;
+        uint32_t n = y - y0;
+        VkSpan s = vk_transient((uint64_t)row * n, 16);
+        for (uint32_t k = 0; k < n; k++) memcpy(s.ptr + (uint64_t)k * row, base + (uint64_t)(y0 + k) * stride, row);
+        VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.wb, .bufferImageHeight = n,
+                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageOffset = {0, (int32_t)y0, 0},
+                                .imageExtent = {w, n, 1}};
+        if (!cb) cb = vk_upload_cmd();
+        rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        prof_tex_partial_bytes += (uint64_t)row * n;
+    }
+    prof_tex_partial++;
+    return true;
+}
 // Buffer textures (target 10): width texels of the format, linear in guest memory, as a 1D image. The game rewrites
 // them every frame (the deferred lighting pass's light lists): hashed each frame they're used, copied when changed.
 static void upload_buffer_texture(NvnTexture *t, TexBackend *b) {
@@ -668,14 +705,26 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (watch < 0) { const char *e = getenv("LARECOMP_VK_TEX_WATCH"); watch = !e || atoi(e) != 0; }
     if (watch && !always_full) {
         extern int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
-        uint32_t now = 0;
+        uint32_t now = 0, before = b->wgen;
         int ch = vk_pages_changed(t->addr, total, b->wgen, &now);
+        static int log_dyn = -1;  // LARECOMP_LOG_DYNTEX=1 (debug): dynamic textures as they're checked, ~every 600 frames
+        if (log_dyn < 0) log_dyn = getenv("LARECOMP_LOG_DYNTEX") ? 1 : 0;
+        if (log_dyn && b->dynamic && ch > 0 && frame % 600 < 2) {
+            extern int vk_pages_written_count(uint64_t addr, uint64_t size, uint32_t since);
+            LOG("[dyntex] frame %llu %llx %ux%u fmt %u bpb %u %s %llu KB: %d of %llu pages written\n",
+                (unsigned long long)frame, (unsigned long long)t->addr, t->width, t->height, t->format, fi->bpb,
+                t->flags & 0x10 ? "linear" : "block linear", (unsigned long long)(total >> 10),
+                vk_pages_written_count(t->addr, total, before), (unsigned long long)((total + 4095) >> 12));
+        }
         if (ch >= 0) {
             b->wgen = now;
             if (!ch && b->uploaded && !restyle) {
                 if (!periodic) { prof_tex_watch_skips++; return; }
                 if (b->dynamic) full_hash_budget -= total;  // (the others took theirs above)
             }
+            // written in part since the last check: only those rows (the periodic full hash and upload stay)
+            if (ch > 0 && b->uploaded && b->dynamic && !restyle && !periodic && upload_written_rows(t, b, fi, mf, before))
+                return;
         }
     }
     bool fast = tex_fast_hash();  // (runtime/nvn/tex_hash.h; LARECOMP_TEX_FASTHASH=0: the previous hashes)

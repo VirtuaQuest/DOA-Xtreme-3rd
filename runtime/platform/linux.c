@@ -284,6 +284,11 @@ void plat_thread_realtime(uint64_t period_ns) {
     setpriority(PRIO_PROCESS, (id_t)gettid(), -10);  // (per thread on Linux; fails quietly without CAP_SYS_NICE)
 }
 int plat_thread_realtime_check(uint64_t period_ns) { (void)period_ns; return -1; }
+void plat_thread_name(const char *name) {  // (Linux names are at most 15 characters)
+    char n[16];
+    snprintf(n, sizeof n, "%s", name);
+    pthread_setname_np(pthread_self(), n);
+}
 
 // ---- process
 // Started from a desktop (the AppImage) there is no terminal: stdout / stderr go to lasrecomp.log in the data folder

@@ -147,6 +147,7 @@ int plat_thread_realtime_check(uint64_t period_ns) {
     plat_thread_realtime(period_ns);
     return 1;
 }
+void plat_thread_name(const char *name) { pthread_setname_np(name); }
 
 // Guest threads start at the default QoS, and on a Mac with efficiency cores (an M1 Air: 4 + 4) the scheduler may run
 // the game's frame-critical threads there - the main thread (priority 44) builds and submits every frame. Priorities

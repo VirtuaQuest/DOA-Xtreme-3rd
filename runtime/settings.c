@@ -161,6 +161,12 @@ void settings_load(void) {
         if (fields != 2) continue;
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
+        else if (!strcmp(key, "fullscreen_mode")) g_settings.fullscreen_exclusive = !strcmp(val, "exclusive");
+        else if (!strcmp(key, "window_size")) {  // (WxH, or auto)
+            int w = 0, h = 0;
+            if (sscanf(val, "%dx%d", &w, &h) != 2 || w < 320 || h < 240 || w > 16384 || h > 16384) w = h = 0;
+            g_settings.window_w = w, g_settings.window_h = h;
+        }
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
@@ -260,6 +266,9 @@ void settings_save(void) {
     fprintf(f, "# DOAX3 Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
+    fprintf(f, "fullscreen_mode = %s\n", g_settings.fullscreen_exclusive ? "exclusive" : "borderless");
+    if (g_settings.window_w > 0) fprintf(f, "window_size = %dx%d\n", g_settings.window_w, g_settings.window_h);
+    else fprintf(f, "window_size = auto\n");
     fprintf(f, "volume = %.2f\n", g_settings.volume);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);

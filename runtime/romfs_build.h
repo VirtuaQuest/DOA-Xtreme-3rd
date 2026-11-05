@@ -11,7 +11,11 @@ extern "C" {
 #endif
 
 #define ROMFS_DATA_START 0x200u
-typedef struct { uint64_t start, size; char *path; } RomfsLayoutFile;  // start: offset in the image
+// A file made of pieces instead of one host file (mods: runtime/mods.c). Each piece is `size` bytes at `at` in the
+// file: from mem, else from the host file path at off, else zeros. Pieces are in order and cover the file.
+typedef struct { uint64_t at, size; const uint8_t *mem; const char *path; uint64_t off; } RomfsPiece;
+typedef struct { RomfsPiece *pieces; int n; uint64_t size; } RomfsSource;
+typedef struct { uint64_t start, size; char *path; const RomfsSource *src; } RomfsLayoutFile;  // start: offset in the image
 typedef struct {
     uint8_t header[ROMFS_DATA_START];  // the image's first bytes (the 0x50-byte header, then zeros)
     uint64_t tables_off, tables_size;  // dir hash, dir entries, file hash and file entries, one blob
@@ -21,8 +25,11 @@ typedef struct {
     uint64_t size;  // the whole image
 } RomfsLayout;
 
-// Lays out the RomFS image of the folder `dir`. false = failed (why: a short message).
+// Lays out the RomFS image of the folder `dir`, with the mods' replacements (mods_source). false = failed (why: a
+// short message).
 bool romfs_layout(const char *dir, RomfsLayout *out, char *why, size_t why_size);
+// n bytes of a pieced file at off (within its size). -1: a host file couldn't be read.
+long long romfs_source_read(const RomfsSource *s, uint8_t *dst, uint64_t n, uint64_t off);
 void romfs_layout_free(RomfsLayout *l);
 
 // Bytes of file data under dir (the image is about this plus its tables).

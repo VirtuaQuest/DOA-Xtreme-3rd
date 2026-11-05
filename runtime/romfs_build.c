@@ -4,6 +4,7 @@
 // has to be consistent: directories and files are sorted by name, children before siblings' children.
 #include "romfs_build.h"
 
+#include "mods.h"
 #include "platform.h"  // (Windows: POSIX mkdir)
 
 #include <dirent.h>
@@ -28,6 +29,7 @@ typedef struct {
     uint64_t size, data_off;
     uint32_t off;  // entry offset in the file table
     Dir *parent;
+    const RomfsSource *src;  // a mod's replacement (NULL: the file at path)
 } File;
 struct Dir {
     char *name, *path;
@@ -112,6 +114,15 @@ static uint32_t bucket_count(uint32_t n) {
     return c;
 }
 
+// a file's path in the image ("00/data_00.lnk"): its directories' names from the root down
+static void rel_path(const Dir *d, const char *name, char *out, size_t cap) {
+    if (d && d->parent) {  // (the root's name is empty)
+        rel_path(d->parent, d->name, out, cap);
+        strlcat(out, "/", cap);
+    }
+    strlcat(out, name, cap);
+}
+
 static uint32_t align4(uint32_t x) { return (x + 3) & ~3u; }
 static uint64_t align16(uint64_t x) { return (x + 15) & ~15ull; }
 static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
@@ -143,6 +154,12 @@ bool romfs_layout(const char *dir, RomfsLayout *out, char *why, size_t why_size)
     l.dirs[l.nd++] = root;
     flatten(root, &l);
     if (!l.nf) FAIL("no files in %s", dir);
+    for (int i = 0; i < l.nf; i++) {  // the mods' replacements (their sizes go into the tables)
+        char rel[1024] = "";
+        rel_path(l.files[i]->parent, l.files[i]->name, rel, sizeof rel);
+        const RomfsSource *s = mods_source(dir, rel, l.files[i]->path, l.files[i]->size);
+        if (s) l.files[i]->src = s, l.files[i]->size = s->size;
+    }
 
     // entry offsets
     uint32_t dsize = 0, fsize = 0;
@@ -213,7 +230,8 @@ bool romfs_layout(const char *dir, RomfsLayout *out, char *why, size_t why_size)
     out->files = malloc(sizeof *out->files * l.nf);
     out->nfiles = l.nf;
     for (int i = 0; i < l.nf; i++)  // (in data order: sorted by start)
-        out->files[i] = (RomfsLayoutFile){ROMFS_DATA_START + l.files[i]->data_off, l.files[i]->size, strdup(l.files[i]->path)};
+        out->files[i] = (RomfsLayoutFile){ROMFS_DATA_START + l.files[i]->data_off, l.files[i]->size, strdup(l.files[i]->path),
+                                          l.files[i]->src};
     ok = true;
 fail:
     free(dtab), free(ftab), free(dbuckets), free(fbuckets), free(l.dirs), free(l.files);

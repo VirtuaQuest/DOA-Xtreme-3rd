@@ -70,6 +70,10 @@ unsigned long long rt_tree_size(const char *path);
 
 typedef struct SDL_Window SDL_Window;
 void rt_window_icon(SDL_Window *w);  // the shipped icon.png, if any
+// The game's name, from its control.nacp (next to the RomFS: g_romfs_dir); the window's title
+const char *rt_game_title(void);
+// The Fullscreen setting on w: borderless at the desktop's size, or exclusive in the display mode closest to window_size
+void rt_window_apply_mode(SDL_Window *w);
 
 #ifdef __cplusplus
 }

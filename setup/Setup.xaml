@@ -1,0 +1,161 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DOAX3 Recomp Setup" Width="780" Height="760" MinWidth="640" MinHeight="520"
+        WindowStartupLocation="CenterScreen" Background="#0F172A" FontFamily="Segoe UI" FontSize="13" Foreground="#E2E8F0"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Card" Color="#1E293B"/>
+    <SolidColorBrush x:Key="Edge" Color="#334155"/>
+    <SolidColorBrush x:Key="Muted" Color="#94A3B8"/>
+    <SolidColorBrush x:Key="Accent" Color="#2DD4BF"/>
+    <Style x:Key="CardBox" TargetType="Border">
+      <Setter Property="Background" Value="{StaticResource Card}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Edge}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="10"/>
+      <Setter Property="Padding" Value="18,14"/>
+      <Setter Property="Margin" Value="0,0,0,12"/>
+    </Style>
+    <Style x:Key="Heading" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="15"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+    <Style x:Key="Hint" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+    </Style>
+    <Style x:Key="Badge" TargetType="Border">
+      <Setter Property="Width" Value="24"/>
+      <Setter Property="Height" Value="24"/>
+      <Setter Property="CornerRadius" Value="12"/>
+      <Setter Property="Background" Value="#134E4A"/>
+      <Setter Property="Margin" Value="0,0,10,0"/>
+    </Style>
+    <Style x:Key="Field" TargetType="TextBox">
+      <Setter Property="Background" Value="#0F172A"/>
+      <Setter Property="Foreground" Value="#E2E8F0"/>
+      <Setter Property="CaretBrush" Value="#E2E8F0"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Edge}"/>
+      <Setter Property="Padding" Value="8,6"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+    <Style x:Key="Btn" TargetType="Button">
+      <Setter Property="Foreground" Value="#E2E8F0"/>
+      <Setter Property="Background" Value="#334155"/>
+      <Setter Property="Padding" Value="14,7"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" Background="{TemplateBinding Background}" CornerRadius="7" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.86"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.7"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="B" Property="Opacity" Value="0.38"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Background" Value="{StaticResource Accent}"/>
+      <Setter Property="Foreground" Value="#042F2E"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+  </Window.Resources>
+
+  <Grid Margin="20,16,20,14">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <DockPanel Grid.Row="0" Margin="0,0,0,14">
+      <Image x:Name="Logo" Width="48" Height="48" Margin="0,0,14,0" DockPanel.Dock="Left"/>
+      <StackPanel VerticalAlignment="Center">
+        <TextBlock Text="DOAX3 Recomp Setup" FontSize="21" FontWeight="SemiBold"/>
+        <TextBlock Style="{StaticResource Hint}" Text="Builds a native Windows version from your own copy of the game. No game files come with this project, and none leave your PC."/>
+      </StackPanel>
+    </DockPanel>
+
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+      <StackPanel>
+        <Border Style="{StaticResource CardBox}">
+          <StackPanel>
+            <DockPanel>
+              <Border Style="{StaticResource Badge}" DockPanel.Dock="Left"><TextBlock Text="1" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource Accent}" FontWeight="SemiBold"/></Border>
+              <Button x:Name="InstallButton" Style="{StaticResource Btn}" Content="Install build tools" DockPanel.Dock="Right" Visibility="Collapsed"/>
+              <TextBlock Style="{StaticResource Heading}" Text="Build tools"/>
+            </DockPanel>
+            <TextBlock x:Name="ToolsText" Style="{StaticResource Hint}" Margin="34,6,0,0" Text="Checking..."/>
+          </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource CardBox}">
+          <StackPanel>
+            <DockPanel Margin="0,0,0,8">
+              <Border Style="{StaticResource Badge}" DockPanel.Dock="Left"><TextBlock Text="2" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource Accent}" FontWeight="SemiBold"/></Border>
+              <TextBlock Style="{StaticResource Heading}" Text="Your game"/>
+            </DockPanel>
+            <Grid Margin="34,0,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="86"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="8"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <TextBlock Text="Game folder" VerticalAlignment="Center"/>
+              <TextBox x:Name="GameBox" Grid.Column="1" Style="{StaticResource Field}"/>
+              <Button x:Name="GameBrowse" Grid.Column="2" Style="{StaticResource Btn}" Content="Browse" Margin="8,0,0,0"/>
+              <TextBlock Grid.Row="2" Text="Keys file" VerticalAlignment="Center"/>
+              <TextBox x:Name="KeysBox" Grid.Row="2" Grid.Column="1" Style="{StaticResource Field}"/>
+              <Button x:Name="KeysBrowse" Grid.Row="2" Grid.Column="2" Style="{StaticResource Btn}" Content="Browse" Margin="8,0,0,0"/>
+            </Grid>
+            <TextBlock x:Name="GameText" Style="{StaticResource Hint}" Margin="34,10,0,0" Text="Choose the folder with your game's .nsp files (the base game, plus its update and DLC if you have them) and the prod.keys dumped from your own console."/>
+          </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource CardBox}">
+          <StackPanel>
+            <DockPanel>
+              <Border Style="{StaticResource Badge}" DockPanel.Dock="Left"><TextBlock Text="3" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource Accent}" FontWeight="SemiBold"/></Border>
+              <Button x:Name="BuildButton" Style="{StaticResource Primary}" Content="Build the game" DockPanel.Dock="Right" IsEnabled="False"/>
+              <Button x:Name="CancelButton" Style="{StaticResource Btn}" Content="Cancel" DockPanel.Dock="Right" Margin="0,0,8,0" Visibility="Collapsed"/>
+              <TextBlock Style="{StaticResource Heading}" Text="Build"/>
+            </DockPanel>
+            <StackPanel Margin="34,8,0,0">
+              <TextBlock x:Name="BuildHint" Style="{StaticResource Hint}" Text="Needs about 20 GB free. It runs in the background, and you can use your PC meanwhile."/>
+              <CheckBox x:Name="KeepBox" Content="Keep the game files already extracted (faster)" Foreground="#E2E8F0" Margin="0,8,0,0" Visibility="Collapsed"/>
+              <StackPanel Orientation="Horizontal" Margin="0,10,0,6">
+                <TextBlock x:Name="StageExtract" Text="&#x25CB;  Extract game files" Foreground="{StaticResource Muted}" Margin="0,0,20,0"/>
+                <TextBlock x:Name="StageRecompile" Text="&#x25CB;  Recompile game code" Foreground="{StaticResource Muted}" Margin="0,0,20,0"/>
+                <TextBlock x:Name="StageCompile" Text="&#x25CB;  Compile" Foreground="{StaticResource Muted}"/>
+              </StackPanel>
+              <ProgressBar x:Name="Progress" Height="5" Foreground="{StaticResource Accent}" Background="#0F172A" BorderThickness="0" Margin="0,2,0,6"/>
+              <TextBlock x:Name="BuildText" Style="{StaticResource Hint}"/>
+              <Button x:Name="LogToggle" Style="{StaticResource Btn}" Content="Show details" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="10,4"/>
+              <TextBox x:Name="LogBox" Visibility="Collapsed" Height="170" Margin="0,8,0,0" IsReadOnly="True" TextWrapping="NoWrap"
+                       Background="#0B1220" Foreground="#CBD5E1" BorderBrush="{StaticResource Edge}" FontFamily="Consolas" FontSize="11.5"
+                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+
+    <DockPanel Grid.Row="2" Margin="0,4,0,0">
+      <Button x:Name="PlayButton" Style="{StaticResource Primary}" Content="Play" DockPanel.Dock="Right" IsEnabled="False" Padding="30,9"/>
+      <Button x:Name="FolderButton" Style="{StaticResource Btn}" Content="Open folder" DockPanel.Dock="Right" Margin="0,0,8,0"/>
+      <TextBlock Style="{StaticResource Hint}" VerticalAlignment="Center" Text="Not affiliated with the game's publisher or Nintendo."/>
+    </DockPanel>
+  </Grid>
+</Window>

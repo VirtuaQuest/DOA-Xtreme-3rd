@@ -82,6 +82,51 @@ def frame_extra_load(module, a):
             f'  /* {a:#x}: the frame\'s extra vsyncs (tools/patches.py) */')
 
 
+# The game's step: a float the main update (1.0.6 0x7000297ec0) hands every system it updates, in 30 fps frames - 1.0
+# per frame, whatever the frame mode. It isn't derived from the mode, so in the 60 fps mode animation, cameras,
+# cutscenes and gameplay ran twice as fast. The update loads its address once per frame, before any system runs: that
+# load asks the runtime (rt_game_step, runtime/hle/game_hooks.c), which halves the step in the 60 fps mode.
+GAME_STEP = (
+    (0x7100041F, 0xFFFFFFFF),  # cmp  w0, #1               (the frame's update count)
+    (0x5400000B, 0xFF00001F),  # b.lt <none>
+    (0x90000014, 0x9F00001F),  # adrp x20, <page>
+    (0x90000015, 0x9F00001F),  # adrp x21, <page>
+    (0xF9400294, 0xFFC003FF),  # ldr  x20, [x20, #<pause flag pointer>]
+    (0xF94002B5, 0xFFC003FF),  # ldr  x21, [x21, #<step pointer>]
+    (0x1E2703E8, 0xFFFFFFFF),  # fmov s8, wzr
+    (0x2A1F03F3, 0xFFFFFFFF),  # mov  w19, wzr
+)
+
+
+def game_step_load(module, a):
+    off = ((module.words[(a - module.lo) // 4] >> 10) & 0xFFF) * 8
+    return ('{ extern uint64_t rt_game_step(uint64_t); '
+            f'c->x[21] = rt_game_step(*(const uint64_t *)(uintptr_t)(c->x[21] + {off:#x})); }}'
+            f'  /* {a:#x}: the game\'s step (tools/patches.py) */')
+
+
+# A worker's state in a handshake with the main thread (1.0.6 0x70002bec70, the "kick"; the worker 0x70002bebd0): the
+# worker runs its job (state 1), sets state 2 and signals the main thread, then sets state 3 and waits for the next kick.
+# The kick wakes it only in state 3, and the main thread then waits for it regardless. Woken in the gap between the
+# worker's signal and its state 3, the main thread can kick too early: skipped, and both sleep for ever. On the Switch the
+# worker's higher priority on a shared core closes the gap; on a PC, in a light scene (the opening movie), it hung about
+# one run in ten. The kick's load of the state asks the runtime (rt_worker_state, runtime/hle/game_hooks.c), which waits
+# out state 2.
+WORKER_KICK = (
+    0xB940050B,  # ldr  w11, [x8, #4]       (the worker's state)
+    0x7100055F,  # cmp  w10, #1             (a kick is wanted)
+    0x7A430960,  # ccmp w11, #3, #0, eq
+    0x54000040,  # b.eq <wake it>
+    0xD65F03C0,  # ret
+)
+
+
+def worker_state_load(module, a):
+    return ('{ extern uint32_t rt_worker_state(uint64_t, uint32_t); '
+            'c->x[11] = rt_worker_state(c->x[8] + 4, (uint32_t)c->x[10]); }'
+            f'  /* {a:#x}: the worker\'s state (tools/patches.py) */')
+
+
 def find_one(words, pattern, what):
     """Index of the one place in words matching pattern ((word, mask) pairs, or plain words)."""
     pat = [p if isinstance(p, tuple) else (p, 0xFFFFFFFF) for p in pattern]
@@ -104,4 +149,8 @@ def find(module):
     patches[module.lo + (i + 2) * 4] = frame_mode_store(0, 0xc)
     i = find_one(module.words, FRAME_EXTRA, 'frame extra vsyncs')
     patches[module.lo + i * 4] = frame_extra_load
+    i = find_one(module.words, GAME_STEP, 'game step')
+    patches[module.lo + (i + 5) * 4] = game_step_load
+    i = find_one(module.words, WORKER_KICK, 'worker kick')
+    patches[module.lo + i * 4] = worker_state_load
     return patches

@@ -203,6 +203,9 @@ uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 // QueueFinish before reusing it: ~350 GPU round trips per load, ~100 ms. The game's waits (renderer_wait_seq,
 // renderer_sync) go no further than this. LARECOMP_FENCE_ALL=1: every submission waited for as before.
 static _Atomic uint64_t obs_seq;
+#define BATCH_MAX 64
+static int batched;  // (command lists waiting in the pending submission: backend_execute; the render thread's)
+static uint64_t stat_batched;
 static void note_observable(void) { atomic_store_explicit(&obs_seq, vk_pending_seq(), memory_order_release); }
 static uint64_t observable_limit(uint64_t seq) {
     static int all = -1;
@@ -541,6 +544,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     cur_sub = (cur_sub + 1) % SUBS;
     pthread_mutex_unlock(&seq_lock);
     passes_in_sub = 0;
+    batched = 0;
     stat_flushes++;
     cum_submits++;
     ring_retire();
@@ -837,6 +841,7 @@ static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
 
 static void *worker(void *a) {
     (void)a;
+    { extern void plat_thread_name(const char *); plat_thread_name("shader worker"); }
     for (;;) {
         pthread_mutex_lock(&jobs_lock);
         while (!jobs_head) pthread_cond_wait(&jobs_cond, &jobs_lock);
@@ -864,6 +869,7 @@ static pthread_mutex_t tjobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t tjobs_cond = PTHREAD_COND_INITIALIZER;
 static void *translator(void *a) {
     (void)a;
+    { extern void plat_thread_name(const char *); plat_thread_name("shader translator"); }
     for (;;) {
         pthread_mutex_lock(&tjobs_lock);
         while (!tjobs_head) pthread_cond_wait(&tjobs_cond, &tjobs_lock);
@@ -1088,13 +1094,13 @@ const char *renderer_stats(void) {
     }
     snprintf(stats_text, sizeof stats_text,
              "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d, fbcopy %llu, upload %.1fMB, "
-             "deferred %llu, snap %lluKB/%llu",
+             "deferred %llu, snap %lluKB/%llu, batched %llu",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)__atomic_exchange_n(&stat_deferred, 0, __ATOMIC_RELAXED), (unsigned long long)(stat_snap_bytes >> 10),
-             (unsigned long long)stat_snap_copies);  // (overlap: SyncWaits returned early; storage copies made)
-    stat_feedback_copies = stat_upload_bytes = stat_snap_bytes = stat_snap_copies = 0;
+             (unsigned long long)stat_snap_copies, (unsigned long long)stat_batched);  // (overlap: SyncWaits returned early; storage copies made; lists submitted with the next)
+    stat_feedback_copies = stat_upload_bytes = stat_snap_bytes = stat_snap_copies = stat_batched = 0;
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
@@ -1110,10 +1116,13 @@ const char *renderer_stats(void) {
                  prof_gpu / 1e6, prof_exec / 1e6, prof_draw / 1e6, prof_pre / 1e6, prof_key / 1e6, prof_dyn / 1e6, prof_sets / 1e6,
                  prof_tex / 1e6, prof_up / 1e6, prof_vtx / 1e6, prof_submit / 1e6);
         extern uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn;
+        extern uint64_t prof_tex_partial, prof_tex_partial_bytes;
         n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, " | tex checks %llu samples %llu full %llu (%.1f MB, dynamic %llu)",
+        snprintf(stats_text + n, sizeof stats_text - n, " | tex checks %llu samples %llu full %llu (%.1f MB, dynamic %llu) partial %llu (%.1f MB)",
                  (unsigned long long)prof_tex_checks, (unsigned long long)prof_tex_samples, (unsigned long long)prof_tex_full,
-                 prof_tex_full_bytes / 1048576.0, (unsigned long long)prof_tex_dyn);
+                 prof_tex_full_bytes / 1048576.0, (unsigned long long)prof_tex_dyn, (unsigned long long)prof_tex_partial,
+                 prof_tex_partial_bytes / 1048576.0);
+        prof_tex_partial = prof_tex_partial_bytes = 0;
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | pass ends:");
         for (int l = 0; l < 4096; l++)
@@ -4700,6 +4709,23 @@ static int pages_written(uint64_t addr, uint64_t size, uint32_t since, uint32_t 
     return changed;
 }
 int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) { return pages_written(addr, size, since, now, true); }
+// Any 4 KB page of [addr, addr+size) stamped written after `since` (after a vk_pages_changed of the range): textures.c
+// partial uploads. (No tracking: true.)
+bool vk_range_written(uint64_t addr, uint64_t size, uint32_t since) {
+    if (!size || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX || !pt_init()) return true;
+    for (uint64_t p = (addr - HEAP_BASE) / VC_PAGE; p <= (addr - HEAP_BASE + size - 1) / VC_PAGE; p++)
+        if (vc_page_gen[p] > since) return true;
+    return false;
+}
+// How many 4 KB pages of [addr, addr+size) were stamped written after `since` (after a vk_pages_changed of the range;
+// -1: no tracking). For the dynamic texture log (textures.c).
+int vk_pages_written_count(uint64_t addr, uint64_t size, uint32_t since) {
+    if (!size || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX || !pt_init()) return -1;
+    int n = 0;
+    for (uint64_t p = (addr - HEAP_BASE) / VC_PAGE; p < (addr - HEAP_BASE + size + VC_PAGE - 1) / VC_PAGE; p++)
+        n += vc_page_gen[p] > since;
+    return n;
+}
 // The storage write watch (watch_check): CPU writes only; the GPU's own writes to the range (DMA) don't count
 static int pages_cpu_written(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) { return pages_written(addr, size, since, now, false); }
 // Pages [addr, addr+size) stamped written after generation `since` by the looks so far (no OS query: the caller just
@@ -7266,6 +7292,12 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     crop[0] *= fx; crop[1] *= fy; crop[2] *= fx; crop[3] *= fy;
     uint32_t w = (uint32_t)(b->width * crop[2]), h = (uint32_t)(b->height * crop[3]);
     if (!w || !h) return;
+    {   // LARECOMP_SHOT_SIZE=<w>x<h> (tests): game-image shots drawn at that size (series of small shots to compare runs)
+        const char *e = getenv("LARECOMP_SHOT_SIZE");
+        unsigned sw = 0, sh = 0;
+        if (e && strstr(path, "frame_") && sscanf(e, "%ux%u", &sw, &sh) == 2 && sw >= 16 && sh >= 9 && sw <= w && sh <= h)
+            w = sw, h = sh;
+    }
     vk_end_pass();
     VkImage img;
     VmaAllocation mem;
@@ -7546,13 +7578,25 @@ static void exec_list(uint64_t handle, int depth) {
     }
 }
 
+// Command lists whose work the game can't see (copies and uploads only: their data was taken at translation) ride
+// with the next submission instead of each making its own: DOAX3's loader submits ~520 such lists per scene change,
+// one texture copy each, and each submission cost its CPU time and a wait for a free submission slot. Anything the
+// game can see (draws, dispatches, counters: note_observable) and every present still submit at once; at most
+// BATCH_MAX lists wait. LARECOMP_SUBMIT_BATCH=0: every list submitted, as before.
+
 void backend_execute(uint64_t handle) {
     PROF_T0();
     exec_list(handle, 0);
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
-    static int sync_submit = -1;
+    static int sync_submit = -1, batch = -1;
     if (sync_submit < 0) sync_submit = getenv("LARECOMP_SYNC_SUBMIT") ? 1 : 0;
+    if (batch < 0) batch = !getenv("LARECOMP_SUBMIT_BATCH") || atoi(getenv("LARECOMP_SUBMIT_BATCH")) != 0;
+    static int fence_all = -1;
+    if (fence_all < 0) fence_all = getenv("LARECOMP_FENCE_ALL") && atoi(getenv("LARECOMP_FENCE_ALL"));
     if (sync_submit) renderer_flush();
+    else if (batch && !fence_all && batched < BATCH_MAX &&
+             atomic_load_explicit(&obs_seq, memory_order_acquire) < vk_pending_seq())
+        batched++, stat_batched++;  // (nothing observable pending: the next submission takes it)
     else renderer_submit();
 }

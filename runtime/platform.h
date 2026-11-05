@@ -47,6 +47,7 @@ int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+void plat_thread_name(const char *name);  // the calling thread's name for debuggers and profilers ("render", "guest 3")
 int plat_thread_realtime_check(uint64_t period_ns);  // (the calling thread, after a late wait) 0 the policy holds, 1 it was
                                                      // gone and is set again, -1 can't tell; only macOS looks
 int plat_cpu_count(void);  // logical cores this process may run on (its affinity mask); 0 if unknown

@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "../hle.h"
 #include "../settings.h"
@@ -61,6 +62,39 @@ uint32_t rt_frame_extra(uint32_t orig) {
     static uint64_t dropped;
     if ((++dropped & (dropped - 1)) == 0) LOG("[game] 60 fps: extra vsyncs dropped %llu times\n", (unsigned long long)dropped);
     return 0;
+}
+
+// A worker's state at the main thread's kick (tools/patches.py WORKER_KICK): a kick that finds the worker in state 2 (its
+// job just done, not yet back at its wait) would be skipped and both threads would sleep for ever. It waits the state out;
+// the worker is only a few instructions from state 3, so a limit of 1 s is never reached unless something else is wrong.
+uint32_t rt_worker_state(uint64_t addr, uint32_t wanted) {
+    volatile uint32_t *state = (volatile uint32_t *)(uintptr_t)addr;
+    uint32_t v = *state;
+    if (v != 2 || wanted != 1) return v;
+    static uint64_t waits;
+    if ((++waits & (waits - 1)) == 0) LOG("[game] worker handshake: waited out its state 2, %llu times\n", (unsigned long long)waits);
+    uint64_t end = plat_now_ns() + 1000000000ull;
+    while ((v = *state) == 2 && plat_now_ns() < end) plat_sleep_until_ns(plat_now_ns() + 50000);
+    return v;
+}
+
+// The game's step (tools/patches.py GAME_STEP): the float its main update hands every system, in 30 fps frames (1.0 a
+// frame), at `ptr`; the update reads its address here once a frame, before any system runs. In the 60 fps mode it is
+// halved, so animation, cameras, cutscenes and gameplay keep their speed. A value the game stores itself (it's 1.0 for
+// the whole game so far; a slow motion would change it) is halved the next frame: what's there and isn't what we
+// stored is the game's.
+uint64_t rt_game_step(uint64_t ptr) {
+    static uint32_t stored;  // (the bits we last wrote; 0: none)
+    float *step = (float *)(uintptr_t)ptr;
+    uint32_t bits;
+    memcpy(&bits, step, 4);
+    if (!g_frame_60 || bits == stored) return ptr;
+    float half = *step * 0.5f;
+    memcpy(&stored, &half, 4);
+    if (!stored) stored = 1;  // (0.0 stays 0.0, but must not read as "nothing stored")
+    LOG("[game] 60 fps: the game's step %g -> %g\n", *step, half);
+    *step = half;
+    return ptr;
 }
 
 // ---- version, for the shader caches' tag (runtime/nvn/shader_prep.c)

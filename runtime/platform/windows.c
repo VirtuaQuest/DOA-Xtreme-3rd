@@ -286,6 +286,17 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 int plat_thread_realtime_check(uint64_t period_ns) { (void)period_ns; return -1; }
+void plat_thread_name(const char *name) {  // (SetThreadDescription: Windows 10 1607 and newer)
+    typedef HRESULT(WINAPI * SetDesc)(HANDLE, PCWSTR);
+    static SetDesc set;
+    static int looked;
+    if (!looked) looked = 1, set = (SetDesc)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadDescription");
+    if (!set) return;
+    wchar_t w[64];
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64);
+    w[63] = 0;
+    set(GetCurrentThread(), w);
+}
 
 // ---- process
 // GUI launches keep their own append-only log; lasrecomp.log names the latest run, with five recent backups.
