@@ -1,5 +1,7 @@
 # DOAX3 Recomp
 
+<a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+
 A static recompilation of *DEAD OR ALIVE Xtreme 3 Scarlet* (Nintendo Switch: version 1.0.0 or the 1.0.6 update, with
 DLC) into a native Windows x86-64 program. It's built on [LAS Recomp](https://github.com/peiikai/LASRecomp)'s recompiler
 and Switch runtime.
@@ -26,7 +28,16 @@ with sound, the opening movie, an optional 60 fps mode and a selectable 3D resol
 Use homebrew dumping tools on your own console for both. This project doesn't provide them, and doesn't help with
 getting game files any other way.
 
-## Install
+## Install with RecompLauncher
+
+[RecompLauncher](https://recomplauncher.com) can install and update this project for you. Point it at the folder with
+your game's `.nsp` files and your `prod.keys`, and it builds the game for you without the setup window, the same way
+`Setup.bat` does. The first time, it installs the build tools (MSYS2 and Python 3.12, Windows may ask for permission).
+It takes about an hour and about 20 GB. Then Play starts the game, and the window mode, window size, 3D resolution,
+frame rate and FPS counter can be changed on the game's page. When a new version comes out, the first Play builds the
+game again, in the setup window, without extracting your files again.
+
+## Install by hand
 
 1. **Download this project.**
    - On GitHub: **Code > Download ZIP**, then right-click the ZIP and pick *Extract All*.
@@ -71,6 +82,18 @@ Mods replace the game's own files (models, textures, voice lines) from `mods/<mo
 extracted files. The mod tool (`tools/mods/doaxmod.py`) unpacks game files, rebuilds models from glTF, and replaces
 portraits and voice lines. See [docs/MODDING.md](docs/MODDING.md). No mods are included. Only share mods made of your
 own work: a mod built from someone else's characters, models or game files carries their copyright.
+
+## Making a release (for maintainers)
+
+1. Commit everything, then run `tools/package_release.sh v0.1.0` (the new version) from Git Bash. It writes
+   `dist/DOAX3Recomp-v0.1.0-Windows-x64.zip`: the project at the last commit, plus `DOAX3Launcher.exe`,
+   `recomplauncher.json` and `release.txt` on top. It contains nothing made from the game.
+2. On GitHub, *Releases > Draft a new release*: tag `v0.1.0`, a title, a line on what changed, and attach that zip.
+   Mark test builds as pre-releases.
+
+RecompLauncher installs the latest full release, runs `DOAX3Launcher.exe --prepare --game <folder>` to build the game
+on the player's PC, and `DOAX3Launcher.exe --play` to start it (`recomplauncher.json`). Both work without RecompLauncher
+too. Keep `recomplauncher.json` in step with `larecomp.ini` when settings are added or renamed.
 
 ## How it works
 

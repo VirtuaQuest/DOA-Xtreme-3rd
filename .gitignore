@@ -26,3 +26,6 @@ build_*/
 *.cert
 # setup's own
 setup/settings.json
+# release packaging (tools/package_release.sh) and the build's own release stamp
+dist/
+/release.txt

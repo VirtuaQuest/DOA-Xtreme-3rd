@@ -67,6 +67,17 @@ make -j16       # compile build/doax3recomp.exe, build/doaxgame.dll and build/DO
 `make gen` must run again after the game files change, for example after adding the update. Then run
 `build/DOAX3Launcher.exe` or `tools/run.sh`.
 
+## Without a window (RecompLauncher, scripts)
+
+- `DOAX3Launcher.exe --prepare --game <folder> [--keys <prod.keys>]` installs the tools if they're missing, then reads,
+  extracts and builds, printing lines like `progress 0.450 Recompiling the game's code`. It exits with 0 when the game
+  is built; an error is one line on stderr, and the whole story is in `setup.log`. Without `--keys`, it uses
+  `prod.keys` in the game folder, then `%USERPROFILE%\.switch\prod.keys`.
+- `DOAX3Launcher.exe --play` starts the game straight away and returns its exit code. In a release folder, when
+  `release.txt` names a newer version than the last build (`build\built-from.txt`), it builds again first, in the setup
+  window, keeping the extracted game files. Exit code 20: not set up yet; 21: that build didn't finish.
+- The same in PowerShell: `setup\Setup.ps1 -Prepare -Game <folder> [-Keys <file>]`.
+
 ## Troubleshooting
 
 | Problem | What to do |
