@@ -13,7 +13,8 @@ $script:FreeGbToExtract = 20    # (about 11 GB of game files with all DLC, plus 
 $script:FreeGbToBuild = 3
 
 function Send-Message([string]$Kind, [string]$Text) {
-    $Shared.Queue.Enqueue("$Kind|$Text")
+    if ($Shared.OnMessage) { & $Shared.OnMessage $Kind $Text }  # (Setup.ps1 -Prepare: progress lines instead of a window)
+    else { $Shared.Queue.Enqueue("$Kind|$Text") }
     if ($Kind -eq 'LOG') {
         try { [IO.File]::AppendAllText((Join-Path $Root 'setup.log'), "$Text`r`n") } catch { }
     }
@@ -220,8 +221,25 @@ function Invoke-Build {
     foreach ($f in 'doax3recomp.exe', 'doaxgame.dll', 'DOAX3Launcher.exe') {
         if (-not (Test-Path (Join-Path $Root "build\$f"))) { Send-Message 'STAGE' 'compile|failed'; throw "The build finished without build\$f." }
     }
+    # (which release it was built from: DOAX3Launcher.exe --play builds again after an update)
+    $release = Join-Path $Root 'release.txt'
+    $from = if (Test-Path -LiteralPath $release) { (Get-Content -LiteralPath $release -TotalCount 1).Trim() } else { 'source' }
+    Set-Content -LiteralPath (Join-Path $Root 'build\built-from.txt') -Value $from -Encoding ASCII
     Send-Message 'STAGE' 'compile|done'
     Write-Step 'The build is finished.'
+}
+
+# prod.keys: the one given, else in the game's folder, else ~/.switch/prod.keys
+function Find-KeysFile([string]$Game, [string]$Given) {
+    if ($Given) {
+        if (-not (Test-Path -LiteralPath $Given -PathType Leaf)) { throw "Keys file not found: $Given" }
+        return $Given
+    }
+    $folder = if (Test-Path -LiteralPath $Game -PathType Leaf) { Split-Path -Parent $Game } else { $Game }
+    foreach ($p in (Join-Path $folder 'prod.keys'), (Join-Path $env:USERPROFILE '.switch\prod.keys')) {
+        if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    }
+    throw "prod.keys wasn't found. Put your console's prod.keys in the folder with your game files."
 }
 
 function Invoke-Pipeline($Files, [string]$KeysFile, [bool]$SkipExtract) {

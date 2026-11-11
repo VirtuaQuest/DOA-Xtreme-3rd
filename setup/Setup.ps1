@@ -1,7 +1,12 @@
 # The setup window: point it at your game and your keys, press Build. Start it with Setup.bat.
 # -Game, -Keys: fill the boxes in. -AutoStart: press Build once they're checked. -Snapshot <png>: run off screen, save a
 # picture of the window when idle, exit (0: ready or built, 1: an error). The last two are for testing.
-param([string]$Game = '', [string]$Keys = '', [switch]$AutoStart, [string]$Snapshot = '')
+# -KeepExtracted: tick "Keep the game files already extracted". -CloseWhenDone: close after a build, exit 0 if it was built.
+# -Prepare: no window. Installs the tools if needed, builds the game from -Game (a folder, or the base game's .nsp) and
+# -Keys (default: prod.keys in that folder, then ~/.switch), printing "progress <0..1> <text>" lines; exit 0 when built.
+# For RecompLauncher, through DOAX3Launcher.exe --prepare. An error is one line on stderr.
+param([string]$Game = '', [string]$Keys = '', [switch]$AutoStart, [string]$Snapshot = '', [switch]$KeepExtracted,
+    [switch]$CloseWhenDone, [switch]$Prepare)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
@@ -9,6 +14,51 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
 $Root = Split-Path -Parent $PSScriptRoot
 $Core = Join-Path $PSScriptRoot 'SetupCore.ps1'
 $SettingsFile = Join-Path $PSScriptRoot 'settings.json'
+
+if ($Prepare) {
+    $Shared = [hashtable]::Synchronized(@{ Queue = New-Object 'Collections.Concurrent.ConcurrentQueue[string]'; Cancel = $false; ChildPid = 0 })
+    . $Core
+    $script:at = 0.0
+    $script:dlc = $false
+    function Say([double]$Fraction, [string]$Text) {
+        if ($Fraction -gt $script:at) { $script:at = [math]::Min(1.0, $Fraction) }
+        [Console]::Out.WriteLine([string]::Format([Globalization.CultureInfo]::InvariantCulture, 'progress {0:0.000} {1}', $script:at, $Text))
+        [Console]::Out.Flush()
+    }
+    $Shared.OnMessage = {
+        param($Kind, $Text)
+        try { [IO.File]::AppendAllText((Join-Path $Root 'setup.log'), "$Text`r`n") } catch { }
+        switch ($Kind) {
+            'SCANNING' { $i, $n = $Text -split ' of '; Say (0.10 + 0.05 * [int]$i / [int]$n) "Reading your game files ($Text)" }
+            'DETAIL' { $i, $n = ($Text -replace '^DLC ', '') -split ' of '; Say (0.27 + 0.18 * [int]$i / [int]$n) "Extracting $Text" }
+            'STAGE' {
+                switch ($Text) {
+                    'extract|running' { Say 0.15 'Extracting your game files' }
+                    'recompile|running' { Say 0.45 "Recompiling the game's code" }
+                    'compile|running' { Say 0.60 'Compiling the game' }
+                }
+            }
+            'LOG' { if ($Text -match '^(Installing MSYS2|Installing the|Installing Python|Updating MSYS2|Creating the Python)') { Say 0.01 $Text } }
+        }
+    }
+    try {
+        if (-not $Game) { throw 'No game folder was given (-Game).' }
+        Say 0 'Checking the build tools'
+        if (-not (Get-ToolStatus).Ready) { Install-Tools }
+        $keysFile = Find-KeysFile $Game $Keys
+        Say 0.10 'Reading your game files'
+        $files = Get-GameFiles $Game $keysFile
+        if (-not $files.Base) { throw "The base game's .nsp isn't there: it's needed, with the update and DLC if you have them." }
+        Invoke-Pipeline $files $keysFile $false
+        try { @{ Game = $Game; Keys = $keysFile } | ConvertTo-Json | Set-Content -LiteralPath $SettingsFile -Encoding UTF8 } catch { }
+        Say 1 'Ready to play'
+        exit 0
+    } catch {
+        try { [IO.File]::AppendAllText((Join-Path $Root 'setup.log'), "Failed: $($_.Exception.Message)`r`n") } catch { }
+        [Console]::Error.WriteLine($_.Exception.Message)
+        exit 1
+    }
+}
 
 $window = [Windows.Markup.XamlReader]::Parse((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Setup.xaml') -Raw))
 $ui = @{}
@@ -193,8 +243,10 @@ function Finish-Work([bool]$Ok, [string]$Payload) {
             $took = (Get-Date) - $state.Started
             $min = [math]::Round($took.TotalMinutes)
             if ($Ok) {
+                $state.Built = $true
                 Set-Colour $ui.BuildText '#34D399'
                 $ui.BuildText.Text = "Finished in $min minutes. Press Play."
+                if ($CloseWhenDone) { $window.Close() }
             } else {
                 $state.Failed = -not ($Payload -eq 'Cancelled.')
                 Set-Colour $ui.BuildText $(if ($Payload -eq 'Cancelled.') { '#94A3B8' } else { '#F87171' })
@@ -204,6 +256,9 @@ function Finish-Work([bool]$Ok, [string]$Payload) {
     }
     Update-Buttons
     if ($state.AutoPending -and -not $state.Busy -and $state.Tools) {
+        if ($KeepExtracted -and $action -eq 'check' -and (Test-Path (Join-Path $Root 'extracted\exefs\main'))) {
+            $state.AutoPending = $false; $ui.KeepBox.IsChecked = $true; Start-Build; return
+        }
         if ($ui.GameBox.Text -and $null -eq $state.Files -and $action -ne 'scan') { Start-Scan; return }
         if ($state.Files -and $state.Files.Base -and $action -eq 'scan') { $state.AutoPending = $false; Start-Build; return }
     } elseif ($state.Tools -and -not $state.Busy -and $action -eq 'check') { Start-Scan }
@@ -312,6 +367,7 @@ if (Test-Path -LiteralPath $SettingsFile) {
         if ($saved.Keys) { $ui.KeysBox.Text = $saved.Keys }
     } catch { }
 }
+if ($KeepExtracted) { $ui.KeepBox.IsChecked = $true }
 if ($Game) { $ui.GameBox.Text = $Game }
 if ($Keys) { $ui.KeysBox.Text = $Keys }
 Find-Keys
@@ -320,3 +376,4 @@ $window.Add_ContentRendered({ $timer.Start(); Update-Buttons; Start-ToolCheck })
 [void]$window.ShowDialog()
 $timer.Stop()
 if ($Snapshot) { exit $(if ($state.Failed) { 1 } else { 0 }) }
+if ($CloseWhenDone) { exit $(if ($state.Built) { 0 } else { 1 }) }

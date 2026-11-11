@@ -2,9 +2,12 @@
 // resolution, the 3D resolution and 60 fps, then start build/doax3recomp.exe as tools/run.sh does. The choices go into
 // larecomp.ini (fullscreen, fullscreen_mode, window_size, render3d, fps60: runtime/settings.c), so the game's own menu and
 // F11 keep working with them; every other line of the file is kept as it is.
+// Two options, for RecompLauncher (recomplauncher.json), open no window: --prepare builds the game from the player's files
+// and --play starts it. Without them the launcher is as it was.
 #define WIN32_LEAN_AND_MEAN  // (UNICODE: -municode)
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
@@ -82,8 +85,11 @@ static BOOL find_paths(wchar_t *err, size_t n) {
     GetModuleFileNameW(NULL, g_exe_dir, MAX_PATH);
     *wcsrchr(g_exe_dir, L'\\') = 0;
     swprintf(g_game, MAX_PATH, L"%ls\\doax3recomp.exe", g_exe_dir);
+    if (!exists(g_game))  // (a release folder: the launcher on top, the game program built into build/)
+        swprintf(g_game, MAX_PATH, L"%ls\\build\\doax3recomp.exe", g_exe_dir);
     if (!exists(g_game)) {
-        swprintf(err, n, L"doax3recomp.exe isn't next to the launcher (%ls). Build it first: make -j16", g_exe_dir);
+        swprintf(err, n, L"doax3recomp.exe isn't next to the launcher (%ls) or in build there. Build it first: run "
+                 L"Setup.bat.", g_exe_dir);
         return FALSE;
     }
     wchar_t p[MAX_PATH];
@@ -182,8 +188,8 @@ static BOOL save_choices(void) {
 }
 
 // As tools/run.sh: the data folder as the working directory and LARECOMP_DATA_ROOT, the MSYS2 libraries on PATH when
-// they aren't next to the program, the log in doax3.log
-static BOOL launch(wchar_t *err, size_t n) {
+// they aren't next to the program, the log in doax3.log. proc: the game's process handle (NULL: let it go)
+static BOOL launch(wchar_t *err, size_t n, HANDLE *proc) {
     SetEnvironmentVariableW(L"LARECOMP_DATA_ROOT", g_root);
     wchar_t p[MAX_PATH];
     swprintf(p, MAX_PATH, L"%ls\\SDL3.dll", g_exe_dir);
@@ -210,8 +216,109 @@ static BOOL launch(wchar_t *err, size_t n) {
     if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
     if (!ok) { swprintf(err, n, L"Couldn't start %ls (error %lu).", g_game, GetLastError()); return FALSE; }
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    if (proc) *proc = pi.hProcess;
+    else CloseHandle(pi.hProcess);
     return TRUE;
+}
+
+// ---- RecompLauncher: no window. --prepare runs setup\Setup.ps1 -Prepare, which builds the game and prints the
+// launcher's "progress 0.4 Text" lines on our output. --play starts the game and returns its exit code; when an update of
+// this project has come since the game was last built (release.txt against build\built-from.txt), it builds it again
+// first, in the setup window, with the game files already extracted.
+enum { EXIT_NOT_SET_UP = 20, EXIT_REBUILD_FAILED = 21 };
+static wchar_t g_proj[MAX_PATH];  // (the folder with setup\: next to the launcher or above it)
+
+static BOOL find_project(void) {
+    GetModuleFileNameW(NULL, g_proj, MAX_PATH);
+    *wcsrchr(g_proj, L'\\') = 0;
+    for (int up = 0; up < 2; up++) {
+        wchar_t p[MAX_PATH];
+        swprintf(p, MAX_PATH, L"%ls\\setup\\Setup.ps1", g_proj);
+        if (exists(p)) return TRUE;
+        wchar_t *s = wcsrchr(g_proj, L'\\');
+        if (!s) break;
+        *s = 0;
+    }
+    return FALSE;
+}
+
+static DWORD run_setup(const wchar_t *args) {  // setup\Setup.ps1 with args, our output its output; its exit code
+    static wchar_t cmd[8192];
+    swprintf(cmd, 8192, L"powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File \"%ls\\setup\\Setup.ps1\" %ls",
+             g_proj, args);
+    STARTUPINFOW si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES};
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    HANDLE std[3] = {si.hStdInput, si.hStdOutput, si.hStdError};
+    for (int i = 0; i < 3; i++)
+        if (std[i] && std[i] != INVALID_HANDLE_VALUE) SetHandleInformation(std[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, g_proj, &si, &pi)) return 1;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code;
+}
+
+static void add_path_arg(wchar_t *out, size_t n, const wchar_t *name, const wchar_t *path) {
+    wchar_t p[MAX_PATH];
+    wcsncpy(p, path, MAX_PATH - 1);
+    p[MAX_PATH - 1] = 0;
+    size_t k = wcslen(p);
+    while (k > 3 && (p[k - 1] == L'\\' || p[k - 1] == L'/')) p[--k] = 0;  // (a trailing \ would escape the quote)
+    size_t used = wcslen(out);
+    swprintf(out + used, n - used, L" %ls \"%ls\"", name, p);
+}
+
+static int prepare(int argc, wchar_t **argv) {
+    if (!find_project()) return 1;
+    wchar_t args[4096] = L"-Prepare";
+    for (int i = 1; i + 1 < argc; i++) {
+        if (!wcscmp(argv[i], L"--game")) add_path_arg(args, 4096, L"-Game", argv[++i]);
+        else if (!wcscmp(argv[i], L"--keys")) add_path_arg(args, 4096, L"-Keys", argv[++i]);
+    }
+    return (int)run_setup(args);
+}
+
+static BOOL read_word(const wchar_t *path, char *out, size_t n) {  // the file's first line, trimmed
+    *out = 0;
+    FILE *f = _wfopen(path, L"rb");
+    if (!f) return FALSE;
+    if (!fgets(out, (int)n, f)) *out = 0;
+    fclose(f);
+    out[strcspn(out, "\r\n")] = 0;
+    size_t k = strlen(out);
+    while (k && (out[k - 1] == ' ' || out[k - 1] == '\t')) out[--k] = 0;
+    return TRUE;
+}
+
+static BOOL needs_rebuild(void) {
+    wchar_t p[MAX_PATH];
+    char release[128], built[128];
+    swprintf(p, MAX_PATH, L"%ls\\release.txt", g_proj);
+    if (!read_word(p, release, sizeof release)) return FALSE;  // (a source checkout: built by hand)
+    swprintf(p, MAX_PATH, L"%ls\\build\\built-from.txt", g_proj);
+    return !read_word(p, built, sizeof built) || strcmp(release, built);
+}
+
+static int play(void) {
+    if (!find_project()) return EXIT_NOT_SET_UP;
+    wchar_t p[MAX_PATH], err[512];
+    swprintf(p, MAX_PATH, L"%ls\\extracted\\exefs\\main", g_proj);
+    if (!exists(p)) return EXIT_NOT_SET_UP;
+    if (needs_rebuild() && (run_setup(L"-AutoStart -KeepExtracted -CloseWhenDone") || needs_rebuild()))
+        return EXIT_REBUILD_FAILED;
+    if (!find_paths(err, 512)) return EXIT_NOT_SET_UP;
+    HANDLE proc;
+    if (!launch(err, 512, &proc)) return EXIT_NOT_SET_UP;
+    WaitForSingleObject(proc, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(proc, &code);
+    CloseHandle(proc);
+    return (int)code;
 }
 
 static HWND add(HWND parent, const wchar_t *cls, const wchar_t *text, DWORD style, int x, int y, int w, int h, int id,
@@ -261,7 +368,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!save_choices()) {
                 swprintf(err, 512, L"Couldn't write %ls.", g_ini);
                 MessageBoxW(hwnd, err, g_title, MB_ICONERROR);
-            } else if (!launch(err, 512)) MessageBoxW(hwnd, err, g_title, MB_ICONERROR);
+            } else if (!launch(err, 512, NULL)) MessageBoxW(hwnd, err, g_title, MB_ICONERROR);
             else DestroyWindow(hwnd);
         } else if (LOWORD(wp) == IDCANCEL) DestroyWindow(hwnd);
         return 0;
@@ -274,6 +381,12 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show) {
     (void)prev, (void)args;
+    int argc = 0;
+    wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 1; argv && i < argc; i++) {
+        if (!wcscmp(argv[i], L"--play")) return play();
+        if (!wcscmp(argv[i], L"--prepare")) return prepare(argc, argv);
+    }
     INITCOMMONCONTROLSEX icc = {sizeof icc, ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&icc);
     wchar_t err[512];

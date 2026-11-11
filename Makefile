@@ -138,7 +138,7 @@ $(B)/launcher/launcher.o: launcher/launcher.c
 	$(CC) -O2 -Wall -municode -c $< -o $@
 
 $(LAUNCHER): $(B)/launcher/launcher.o $(B)/launcher/res.o
-	$(CC) -fuse-ld=lld -municode -mwindows -o $@ $^ -lcomctl32
+	$(CC) -fuse-ld=lld -municode -mwindows -o $@ $^ -lcomctl32 -lshell32
 
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
 
