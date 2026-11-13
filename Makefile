@@ -48,7 +48,9 @@ GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | sha256sum | cu
 GAMELIB_BUILD := $(shell od -An -tx1 -j64 -N8 extracted/exefs/main 2>/dev/null | tr -d ' \n' | tr a-f A-F)
 GAMELIB_FULL_ID := $(GAMELIB_ID)-$(or $(GAMELIB_BUILD),unknown)
 
-all: $(EXE) $(LAUNCHER) $(if $(GEN_SRC),$(GAMELIB))
+DLLS     := $(B)/dlls.stamp
+
+all: $(EXE) $(LAUNCHER) $(DLLS) $(if $(GEN_SRC),$(GAMELIB))
 
 # ---- the game code: generated C from the game's own NSOs (never committed)
 gen:
@@ -127,6 +129,12 @@ $(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(if $(ICON),$(B)/icon/i
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
+
+# ---- the MSYS2 libraries next to the game, so it starts without MSYS2 on PATH and survives MSYS2 updates. When
+# MSYS2 no longer has a library it was linked with (exit 2), the game is linked again against today's.
+$(DLLS): $(EXE) tools/copy_dlls.sh
+	sh tools/copy_dlls.sh $(EXE) || { [ $$? -eq 2 ] && rm -f $(EXE) && $(MAKE) $(EXE) && sh tools/copy_dlls.sh $(EXE); }
+	touch $@
 
 # ---- the launcher (display mode and resolution, then the game): launcher/
 $(B)/launcher/res.o: launcher/launcher.rc launcher/launcher.manifest $(ICON)

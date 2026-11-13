@@ -53,13 +53,56 @@ function Invoke-Tool([string]$Exe, [string[]]$Arguments, [hashtable]$Environment
     return $p.ExitCode
 }
 
+# A program's output lines, its errors thrown away. Not with & : in Windows PowerShell a native program's stderr becomes
+# an error, which with ErrorActionPreference Stop stopped setup (py's "No suitable Python runtime found").
+function Get-NativeOutput([string]$Exe, [string]$Arguments) {
+    try {
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = $Exe
+        $info.Arguments = $Arguments
+        $info.UseShellExecute = $false
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        $info.CreateNoWindow = $true
+        $p = [Diagnostics.Process]::Start($info)
+        $err = $p.StandardError.ReadToEndAsync()
+        $out = $p.StandardOutput.ReadToEnd()
+        if (-not $p.WaitForExit(20000)) { try { $p.Kill() } catch { } }
+        [void]$err.Wait(1000)
+        @($out -split "`r?`n" | Where-Object { $_ })
+    } catch { @() }
+}
+
+# Python 3.12, wherever it is: the py launcher's, the registry's (python.org installers), python on PATH, the usual
+# folders. Each is asked its own version; the Microsoft Store's placeholder in WindowsApps isn't Python.
 function Find-Python {
-    $found = @()
+    $candidates = New-Object Collections.ArrayList
     if (Get-Command py.exe -ErrorAction SilentlyContinue) {
-        $found += (& py.exe -V:3.12 -c 'import sys; print(sys.executable)' 2>$null)
+        # (lines like " -V:3.12 *        C:\Users\me\AppData\Local\Programs\Python\Python312\python.exe")
+        foreach ($l in (Get-NativeOutput (Get-Command py.exe).Source '--list-paths')) {
+            $m = [regex]::Match($l, '-V:3\.12(?:-64)?\s+(?:\*\s+)?(.+?\.exe)\s*$')
+            if ($m.Success) { [void]$candidates.Add($m.Groups[1].Value) }
+        }
     }
-    $found += "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", 'C:\Python312\python.exe'
-    foreach ($p in $found) { if ($p -and (Test-Path $p)) { return $p } }
+    foreach ($hive in 'HKCU:', 'HKLM:', 'HKLM:\SOFTWARE\WOW6432Node') {
+        foreach ($tag in '3.12', '3.12-64') {
+            try {
+                $ip = Get-ItemProperty -LiteralPath "$hive\SOFTWARE\Python\PythonCore\$tag\InstallPath" -ErrorAction Stop
+                if ($ip.ExecutablePath) { [void]$candidates.Add($ip.ExecutablePath) }
+                if ($ip.'(default)') { [void]$candidates.Add((Join-Path $ip.'(default)' 'python.exe')) }
+            } catch { }
+        }
+    }
+    foreach ($name in 'python3.12.exe', 'python.exe', 'python3.exe') {
+        foreach ($c in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) { [void]$candidates.Add($c.Source) }
+    }
+    foreach ($p in "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", 'C:\Python312\python.exe',
+        "$env:ProgramFiles\Python312\python.exe", "${env:ProgramFiles(x86)}\Python312\python.exe") { [void]$candidates.Add($p) }
+    foreach ($p in $candidates) {
+        if (-not $p -or -not (Test-Path -LiteralPath $p -PathType Leaf) -or $p -like '*\WindowsApps\*') { continue }
+        $v = (Get-NativeOutput $p '-V') -join ' '
+        if ($v -match '^Python 3\.12\.') { return $p }
+    }
     return $null
 }
 
@@ -78,8 +121,8 @@ function Get-ToolStatus {
     $venv = $false
     $vp = Get-VenvPython
     if (Test-Path $vp) {
-        & $vp -I -c 'import unicorn, capstone, lz4, Crypto' 2>$null
-        $venv = ($LASTEXITCODE -eq 0)
+        $ok = Get-NativeOutput $vp '-I -c "import unicorn, capstone, lz4, Crypto; print(123)"'
+        $venv = ($ok -contains '123')
     }
     [pscustomobject]@{
         Msys     = (Test-Path $pacman)
@@ -256,12 +299,24 @@ function Get-KeysPlaces([string]$Game) {
 
 # prod.keys: the one given (RecompLauncher passes its shared copy), else the first of Get-KeysPlaces with a header_key
 function Find-KeysFile([string]$Game, [string]$Given) {
+    $hasHeader = { param($p) (Test-Path -LiteralPath $p -PathType Leaf) -and (Select-String -LiteralPath $p -Pattern '^\s*header_key\s*=' -Quiet) }
     if ($Given) {
         if (-not (Test-Path -LiteralPath $Given -PathType Leaf)) { throw "Keys file not found: $Given" }
-        return $Given
+        if (& $hasHeader $Given) { return $Given }
+        # Not a prod.keys (title.keys has no header_key, and is easy to pick by mistake): the prod.keys beside it, or
+        # one in the usual places, is used instead.
+        $beside = Join-Path (Split-Path -Parent $Given) 'prod.keys'
+        foreach ($p in @($beside) + @(Get-KeysPlaces $Game)) {
+            if (& $hasHeader $p) {
+                Write-Step "$([IO.Path]::GetFileName($Given)) isn't a prod.keys (it has no header_key): using $p instead."
+                return $p
+            }
+        }
+        throw ("That keys file ($([IO.Path]::GetFileName($Given))) isn't a prod.keys: it has no header_key line. Choose the " +
+            "prod.keys dumped from your console (title.keys is a different file).")
     }
     foreach ($p in (Get-KeysPlaces $Game)) {
-        if ((Test-Path -LiteralPath $p -PathType Leaf) -and (Select-String -LiteralPath $p -Pattern '^\s*header_key\s*=' -Quiet)) { return $p }
+        if (& $hasHeader $p) { return $p }
     }
     throw ("prod.keys wasn't found. Put your console's prod.keys in the folder with your game files, or give it with " +
         "--keys <file>. Looked in that folder and its subfolders, the folder above it, %USERPROFILE%\.switch, and the " +

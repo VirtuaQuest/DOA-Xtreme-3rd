@@ -43,6 +43,9 @@ if ($Prepare) {
     }
     try {
         if (-not $Game) { throw 'No game folder was given (-Game).' }
+        if (-not (Test-Path -LiteralPath $Game)) { throw "The game files aren't there any more: $Game" }
+        # (the base game's .nsp picked: the update and DLC beside it count too)
+        if (Test-Path -LiteralPath $Game -PathType Leaf) { $Game = Split-Path -Parent $Game }
         Say 0 'Checking the build tools'
         if (-not (Get-ToolStatus).Ready) { Install-Tools }
         $keysFile = Find-KeysFile $Game $Keys

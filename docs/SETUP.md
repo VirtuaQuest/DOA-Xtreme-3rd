@@ -69,12 +69,13 @@ make -j16       # compile build/doax3recomp.exe, build/doaxgame.dll and build/DO
 
 ## Without a window (RecompLauncher, scripts)
 
-- `DOAX3Launcher.exe --prepare --game <folder> [--keys <prod.keys>]` installs the tools if they're missing, then reads,
-  extracts and builds, printing lines like `progress 0.450 Recompiling the game's code`. It exits with 0 when the game
-  is built; an error is one line on stderr, and the whole story is in `setup.log`. RecompLauncher passes the
-  `prod.keys` it keeps with `--keys`. Without `--keys`, it uses the first `prod.keys` it finds in the game folder (or a
-  folder in it, two deep), the folder above it, `%USERPROFILE%\.switch`, or the Ryujinx, yuzu, suyu, sudachi, citron
-  and eden key folders in `%APPDATA%`. When the game files are the same as last time (names and sizes), the files
+- `DOAX3Launcher.exe --prepare --game <folder or base .nsp> [--keys <prod.keys>]` installs the tools if they're missing,
+  then reads, extracts and builds, printing lines like `progress 0.450 Recompiling the game's code`. It exits with 0
+  when the game is built; an error is one line on stderr, and the whole story is in `setup.log`. Given a `.nsp`, it
+  reads the whole folder it's in. RecompLauncher passes the `prod.keys` the player picked with `--keys`; a keys file
+  without a `header_key` (a `title.keys` picked by mistake) is swapped for the `prod.keys` beside it. Without `--keys`,
+  it uses the first `prod.keys` it finds in the game folder (or a folder in it, two deep), the folder above it,
+  `%USERPROFILE%\.switch`, or the Ryujinx, yuzu, suyu, sudachi, citron and eden key folders in `%APPDATA%`. When the game files are the same as last time (names and sizes), the files
   already extracted are kept, so setting up again after an update only builds.
 - `DOAX3Launcher.exe --play` starts the game straight away and returns its exit code. In a release folder, when
   `release.txt` names a newer version than the last build (`build\built-from.txt`), it builds again first, in the setup
@@ -91,6 +92,8 @@ make -j16       # compile build/doax3recomp.exe, build/doaxgame.dll and build/DO
 | "the base game's .nsp is needed too" | The update and DLC only work on top of the base game: add its `.nsp` to the folder. |
 | The build fails | Press *Show details*, or read `setup.log` in the project folder. Check you have the free space, and that the project's path has no unusual characters. |
 | The launcher says `doax3recomp.exe` or `extracted` is missing | The build didn't finish: run Setup again. |
+| A DLL is missing (`SDL3.dll`, `avcodec-*.dll`, `libstdc++-6.dll`...) | Run Setup again and build: the build puts the MSYS2 libraries the game needs in `build\`, next to `doax3recomp.exe` (`tools/copy_dlls.sh`), so it doesn't need MSYS2 on PATH. Builds before v0.1.2 didn't. |
+| "No suitable Python runtime found" | Fixed in v0.1.2: Setup now also finds Python 3.12 on PATH, in the registry and in Program Files, not only through the `py` launcher. |
 | The game starts with a black window or closes at once | Update your GPU drivers (Vulkan). Then read `doax3.log`. |
 | A game file is missing at start | Extract again: in Setup, untick *Keep the game files already extracted*. |
 
