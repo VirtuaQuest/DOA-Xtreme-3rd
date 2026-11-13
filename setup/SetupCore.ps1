@@ -191,6 +191,8 @@ function Invoke-Extract($Files, [string]$KeysFile) {
     $vp = Get-VenvPython
     $script_ = Join-Path $Root 'tools\nsp_extract.py'
     $out = Join-Path $Root 'extracted'
+    $stamp = Join-Path $out 'extracted-from.txt'
+    if (Test-Path -LiteralPath $stamp) { Remove-Item -LiteralPath $stamp -Force }
     Write-Step 'Extracting the game...'
     if ($Files.Update) { $list = @($script_, $Files.Update, $KeysFile, $out, '--base', $Files.Base) }
     else { $list = @($script_, $Files.Base, $KeysFile, $out) }
@@ -204,6 +206,7 @@ function Invoke-Extract($Files, [string]$KeysFile) {
         if ($code -ne 0) { throw "Extracting $([IO.Path]::GetFileName($d)) failed (exit code $code). See the log." }
     }
     if (-not (Test-Path (Join-Path $out 'exefs\main'))) { throw "Extraction finished without the game's program." }
+    [IO.File]::WriteAllText($stamp, (Get-FilesStamp $Files))
 }
 
 function Invoke-Build {
@@ -229,17 +232,55 @@ function Invoke-Build {
     Write-Step 'The build is finished.'
 }
 
-# prod.keys: the one given, else in the game's folder, else ~/.switch/prod.keys
+# Where a prod.keys usually is: the game's folder (or a folder in it, two deep), the folder around it, ~/.switch, and
+# the key folders of the Switch emulators.
+function Get-KeysPlaces([string]$Game) {
+    $places = New-Object Collections.ArrayList
+    $folder = ''
+    if ($Game) { $folder = if (Test-Path -LiteralPath $Game -PathType Leaf) { Split-Path -Parent $Game } else { $Game } }
+    if ($folder -and (Test-Path -LiteralPath $folder -PathType Container)) {
+        [void]$places.Add((Join-Path $folder 'prod.keys'))
+        Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            [void]$places.Add((Join-Path $_.FullName 'prod.keys'))
+            Get-ChildItem -LiteralPath $_.FullName -Directory -ErrorAction SilentlyContinue | ForEach-Object { [void]$places.Add((Join-Path $_.FullName 'prod.keys')) }
+        }
+        $up = Split-Path -Parent $folder
+        if ($up) { [void]$places.Add((Join-Path $up 'prod.keys')) }
+    }
+    [void]$places.Add((Join-Path $env:USERPROFILE '.switch\prod.keys'))
+    foreach ($emu in 'Ryujinx\system', 'yuzu\keys', 'suyu\keys', 'sudachi\keys', 'citron\keys', 'eden\keys') {
+        [void]$places.Add((Join-Path $env:APPDATA "$emu\prod.keys"))
+    }
+    $places
+}
+
+# prod.keys: the one given (RecompLauncher passes its shared copy), else the first of Get-KeysPlaces with a header_key
 function Find-KeysFile([string]$Game, [string]$Given) {
     if ($Given) {
         if (-not (Test-Path -LiteralPath $Given -PathType Leaf)) { throw "Keys file not found: $Given" }
         return $Given
     }
-    $folder = if (Test-Path -LiteralPath $Game -PathType Leaf) { Split-Path -Parent $Game } else { $Game }
-    foreach ($p in (Join-Path $folder 'prod.keys'), (Join-Path $env:USERPROFILE '.switch\prod.keys')) {
-        if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    foreach ($p in (Get-KeysPlaces $Game)) {
+        if ((Test-Path -LiteralPath $p -PathType Leaf) -and (Select-String -LiteralPath $p -Pattern '^\s*header_key\s*=' -Quiet)) { return $p }
     }
-    throw "prod.keys wasn't found. Put your console's prod.keys in the folder with your game files."
+    throw ("prod.keys wasn't found. Put your console's prod.keys in the folder with your game files, or give it with " +
+        "--keys <file>. Looked in that folder and its subfolders, the folder above it, %USERPROFILE%\.switch, and the " +
+        "Ryujinx, yuzu, suyu, sudachi, citron and eden key folders.")
+}
+
+# What a finished extraction was made from (file names and sizes), so building again from the same files can keep it
+function Get-FilesStamp($Files) {
+    $parts = @(@($Files.Base, $Files.Update) + @($Files.Dlc) | Where-Object { $_ } | ForEach-Object {
+        $f = Get-Item -LiteralPath $_
+        "$($f.Name)|$($f.Length)"
+    })
+    ($parts | Sort-Object) -join "`n"
+}
+
+function Test-ExtractedFrom($Files) {
+    $stamp = Join-Path $Root 'extracted\extracted-from.txt'
+    if (-not (Test-Path (Join-Path $Root 'extracted\exefs\main')) -or -not (Test-Path -LiteralPath $stamp)) { return $false }
+    ([IO.File]::ReadAllText($stamp)).Trim() -eq (Get-FilesStamp $Files).Trim()
 }
 
 function Invoke-Pipeline($Files, [string]$KeysFile, [bool]$SkipExtract) {

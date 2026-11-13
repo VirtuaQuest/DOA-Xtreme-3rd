@@ -30,9 +30,10 @@ getting game files any other way.
 
 ## Install with RecompLauncher
 
-[RecompLauncher](https://recomplauncher.com) can install and update this project for you. Point it at the folder with
-your game's `.nsp` files and your `prod.keys`, and it builds the game for you without the setup window, the same way
-`Setup.bat` does. The first time, it installs the build tools (MSYS2 and Python 3.12, Windows may ask for permission).
+[RecompLauncher](https://recomplauncher.com) can install and update this project for you. Its setup screen asks for two
+things: the folder with your game's `.nsp` files (base game, and the update and DLC if you have them), and your
+console's `prod.keys` (the launcher keeps one copy for every Switch recomp). Then it builds the game for you without the
+setup window, the same way `Setup.bat` does. The first time, it installs the build tools (MSYS2 and Python 3.12, Windows may ask for permission).
 It takes about an hour and about 20 GB. Then Play starts the game, and the window mode, window size, 3D resolution,
 frame rate and FPS counter can be changed on the game's page. When a new version comes out, the first Play builds the
 game again, in the setup window, without extracting your files again.

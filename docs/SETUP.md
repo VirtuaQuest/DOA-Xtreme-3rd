@@ -71,8 +71,11 @@ make -j16       # compile build/doax3recomp.exe, build/doaxgame.dll and build/DO
 
 - `DOAX3Launcher.exe --prepare --game <folder> [--keys <prod.keys>]` installs the tools if they're missing, then reads,
   extracts and builds, printing lines like `progress 0.450 Recompiling the game's code`. It exits with 0 when the game
-  is built; an error is one line on stderr, and the whole story is in `setup.log`. Without `--keys`, it uses
-  `prod.keys` in the game folder, then `%USERPROFILE%\.switch\prod.keys`.
+  is built; an error is one line on stderr, and the whole story is in `setup.log`. RecompLauncher passes the
+  `prod.keys` it keeps with `--keys`. Without `--keys`, it uses the first `prod.keys` it finds in the game folder (or a
+  folder in it, two deep), the folder above it, `%USERPROFILE%\.switch`, or the Ryujinx, yuzu, suyu, sudachi, citron
+  and eden key folders in `%APPDATA%`. When the game files are the same as last time (names and sizes), the files
+  already extracted are kept, so setting up again after an update only builds.
 - `DOAX3Launcher.exe --play` starts the game straight away and returns its exit code. In a release folder, when
   `release.txt` names a newer version than the last build (`build\built-from.txt`), it builds again first, in the setup
   window, keeping the extracted game files. Exit code 20: not set up yet; 21: that build didn't finish.

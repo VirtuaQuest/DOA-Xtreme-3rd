@@ -5,11 +5,14 @@
   "repo": "VirtuaQuest/DOA-Xtreme-3rd",
   "game": {
     "kind": "folder",
-    "label": "A folder with your own dump of DEAD OR ALIVE Xtreme 3 Scarlet for Nintendo Switch: the base game (.nsp, title ID 01009CC00C97C000), the 1.0.6 update and your DLC if you have them (.nsp), and your console's prod.keys."
+    "label": "The folder with your own dump of DEAD OR ALIVE Xtreme 3 Scarlet for Nintendo Switch: the base game (.nsp, title ID 01009CC00C97C000), and the 1.0.6 update and your DLC (.nsp) if you have them. Subfolders are fine, and the file names don't matter."
   },
+  "inputs": [
+    { "id": "keys", "label": "Your console's prod.keys (dumped from the same Switch, at least as new as your game files)", "role": "key", "shared": "switch.prod-keys" }
+  ],
   "prepare": {
     "program": ["DOAX3Launcher.exe"],
-    "args": ["--prepare", "--game", "{game}"],
+    "args": ["--prepare", "--game", "{game}", "--keys", "{input:keys}"],
     "label": "Building the game from your files. The first time, it also installs the free build tools (MSYS2 and Python 3.12), and Windows may ask for permission. Takes about an hour and needs about 20 GB free.",
     "timeout": 10800
   },
@@ -30,7 +33,7 @@
     "logs": [{ "path": "{install}" }]
   },
   "exit_codes": {
-    "20": "The game isn't set up yet, or its files are missing. Set it up again on the game's page, with the folder holding your game files and prod.keys.",
+    "20": "The game isn't set up yet, or its files are missing. Set it up again on the game's page: choose the folder with your game files, and your prod.keys.",
     "21": "This update of DOAX3 Recomp needs the game built again, and that didn't finish. Press Play to try again. What went wrong is in setup.log in the game's folder."
   },
   "looks": {

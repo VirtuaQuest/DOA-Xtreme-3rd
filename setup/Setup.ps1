@@ -48,8 +48,18 @@ if ($Prepare) {
         $keysFile = Find-KeysFile $Game $Keys
         Say 0.10 'Reading your game files'
         $files = Get-GameFiles $Game $keysFile
-        if (-not $files.Base) { throw "The base game's .nsp isn't there: it's needed, with the update and DLC if you have them." }
-        Invoke-Pipeline $files $keysFile $false
+        if (-not $files.Base) {
+            $bad = @($files.Unreadable).Count
+            if ($bad -gt 0 -and $null -eq $files.Update -and @($files.Dlc).Count -eq 0) {
+                throw "None of the $bad .nsp files could be read with that prod.keys. The keys may be older than your game files (dump them again from your Switch), or from another console."
+            }
+            if ($bad -gt 0) { throw "The base game's .nsp couldn't be found: $bad of the files couldn't be read with that prod.keys, and it may be one of them. The keys may be older than the game files." }
+            throw "The base game's .nsp isn't in that folder (title ID 01009CC00C97C000). It's needed, with the update and DLC if you have them."
+        }
+        # (RecompLauncher sets up again after each update: the same files are not extracted again)
+        $keep = Test-ExtractedFrom $files
+        if ($keep) { Write-Step 'The game files were extracted from these same files before: kept.' }
+        Invoke-Pipeline $files $keysFile $keep
         try { @{ Game = $Game; Keys = $keysFile } | ConvertTo-Json | Set-Content -LiteralPath $SettingsFile -Encoding UTF8 } catch { }
         Say 1 'Ready to play'
         exit 0
