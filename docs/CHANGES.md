@@ -219,7 +219,8 @@ route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
     the opening. The character select's backgrounds change every 10 s in both modes (it went with the step, too: the
     "UI timers" noted before were this).
 - **Setting:** `fps60` in larecomp.ini, Video > Rendering > "60 fps", or the launcher's "60 fps" box. It applies at
-  the next start. Off by default. `LARECOMP_FPS=30/60` overrides it (test).
+  the next start. On by default (since 120 fps came: 60 is the default frame rate; a larecomp.ini that has
+  `fps60 = 0` keeps 30). `LARECOMP_FPS=30/60/120` overrides it (test).
 - **Result** (RTX 3060, 1440p 3D): a locked 60 fps through the menus and a 7-minute run (186 of ~200 two-second
   windows at 60.0; dips only at loads). The game uncapped runs at 230-250 fps, worst frame 8 ms.
 - `LARECOMP_LOG_INTERVAL=1` now logs the guest call stack of each present-interval change.
@@ -240,6 +241,7 @@ route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
   - **The time step** (0x700038f690, seconds per frame, 1/60 in mode 0): 1/120 (`rt_time_step`, TIME_STEP).
   - **The game's float step** (GAME_STEP): 0.25 instead of 0.5 (`rt_game_step`).
 - **Pacing:** `present_pace` paces at 120 Hz in this mode (a display within 0.5% of 120 Hz sets the grid, as at 60).
+- **Experimental**, and labelled so everywhere: off by default (60 fps is the default).
 - **Setting:** `fps120 = 1` with `fps60 = 1` in larecomp.ini, Video > Rendering > "Frame rate", the launcher's Frame
   rate, or RecompLauncher's. `fps60 = 0` is always 30 fps, so a launcher that only knows `fps60` still decides.
   `LARECOMP_FPS=120` (test). `tools/route.sh` stretches its presses 4x at 120.

@@ -35,7 +35,7 @@ things: your game (the folder with its `.nsp` files: base game, and the update a
 game's `.nsp`, with the others beside it), and your console's `prod.keys`. Pick `prod.keys`, not `title.keys`. Then it
 builds the game for you without the setup window, the same way `Setup.bat` does. The first time, it installs the build tools (MSYS2 and Python 3.12, Windows may ask for permission).
 It takes about an hour and about 20 GB. Then Play starts the game, and the window mode, window size, 3D resolution,
-frame rate (30, 60 or 120), anti-aliasing, texture filtering, upscaler, FPS counter, controls and background
+frame rate (30, 60 by default, or an experimental 120), anti-aliasing, texture filtering, upscaler, FPS counter, controls and background
 controller input can be changed on the game's page. When a new version comes out, the first Play builds the
 game again, in the setup window, without extracting your files again.
 
@@ -58,9 +58,10 @@ game again, in the setup window, without extracting your files again.
       `generated/`, and compiles the program into `build/`. Allow about an hour (54 minutes on a 10-core PC with all DLC).
       It runs in the background, and *Show details* shows what it's doing.
 4. **Play.** Press *Play* in Setup, or double-click `Play.bat` any time later. The launcher lets you choose windowed,
-   borderless or fullscreen, the resolution, the 3D resolution, the controls, the frame rate (30, 60 or 120: the game
-   keeps its speed at each), anti-aliasing (SMAA), texture filtering (up to 16x anisotropic), the upscaler (AMD FSR 1
-   or bilinear), the FPS counter and whether the controller works in the background, then starts the game.
+   borderless or fullscreen, the resolution, the 3D resolution, the controls, the frame rate (30, 60 by default, or
+   an experimental 120: the game keeps its speed at each), anti-aliasing (SMAA), texture filtering (up to 16x
+   anisotropic), the upscaler (AMD FSR 1 or bilinear), the FPS counter and whether the controller works in the
+   background, then starts the game.
    *Controls*: **Switch controls** keeps A on the right face button and B on the bottom one, as on a Switch;
    **Other** swaps A with B and X with Y, so A is the bottom button, as on an Xbox controller. Single buttons can be
    changed in the game's menu (F1).

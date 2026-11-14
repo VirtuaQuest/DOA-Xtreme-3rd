@@ -84,13 +84,13 @@
     },
     {
       "id": "fps60", "label": "Frame rate",
-      "help": "60 draws twice as many frames as the console's 30, and 120 four times as many (best on a 120 Hz or faster display). The game keeps its normal speed at every rate.",
+      "help": "60 (the default) draws twice as many frames as the console's 30. 120 draws four times as many and is experimental: a part of the game may still run at the wrong speed there; it's best on a 120 Hz or faster display. The game keeps its normal speed at 30 and 60.",
       "choices": [
         { "label": "30 (as on the console)", "set": { "fps60": "0", "fps120": "0" } },
         { "label": "60", "set": { "fps60": "1", "fps120": "0" } },
-        { "label": "120", "set": { "fps60": "1", "fps120": "1" } }
+        { "label": "120 (experimental)", "set": { "fps60": "1", "fps120": "1" } }
       ],
-      "defaults": { "fps60": "0", "fps120": "0" }
+      "defaults": { "fps60": "1", "fps120": "0" }
     },
     {
       "id": "antialias", "label": "Anti-aliasing",

@@ -43,6 +43,7 @@ Settings g_settings = {
     .upscaler_auto = true,
     .res_auto = true,
     .render3d_auto = true,
+    .fps60 = true,  // (60 fps by default; 120 is experimental: fps120)
     .livesplit_host = "localhost:16834",
 #ifndef __APPLE__
     .bg_input = true,  // (as before the setting; on macOS it needs Input Monitoring permission, so Off there)

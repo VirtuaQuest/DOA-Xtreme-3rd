@@ -30,7 +30,7 @@ static const char *const k_r3d_keys[] = {"auto", "original", "1080p", "1440p", "
 static const wchar_t *const k_r3d_names[] = {L"Default for your GPU", L"Original (1600x900)", L"1920x1080",
                                              L"2560x1440", L"3840x2160 (may run out of memory)"};
 // Frame rate (fps60, and fps120 with it), anti-aliasing (antialias) and texture filtering (anisotropy)
-static const wchar_t *const k_fps_names[] = {L"30 (as on the Switch)", L"60", L"120 (for 120 Hz and faster displays)"};
+static const wchar_t *const k_fps_names[] = {L"30 (as on the Switch)", L"60", L"120 (experimental)"};
 static const wchar_t *const k_aa_names[] = {L"Off", L"SMAA"};
 static const wchar_t *const k_af_names[] = {L"As on the Switch", L"2x anisotropic", L"4x anisotropic", L"8x anisotropic",
                                             L"16x anisotropic"};
@@ -198,7 +198,8 @@ static void load_choices(void) {
     for (int i = 1; i < 5; i++)
         if (!strcmp(ini_get("render3d"), k_r3d_keys[i])) r3d = i;
     SendMessageW(g_r3d, CB_SETCURSEL, r3d, 0);
-    SendMessageW(g_fps, CB_SETCURSEL, !atoi(ini_get("fps60")) ? 0 : atoi(ini_get("fps120")) ? 2 : 1, 0);
+    const char *f60 = ini_get("fps60");  // (no line: 60, the game's default)
+    SendMessageW(g_fps, CB_SETCURSEL, *f60 && !atoi(f60) ? 0 : atoi(ini_get("fps120")) ? 2 : 1, 0);
     const char *aa = ini_get("antialias");  // (the game: anything but "off" is SMAA; no line: off)
     SendMessageW(g_aa, CB_SETCURSEL, *aa && strcmp(aa, "off") ? 1 : 0, 0);
     int af = 0;
