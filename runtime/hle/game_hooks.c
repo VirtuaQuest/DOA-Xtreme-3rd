@@ -1,6 +1,7 @@
 // Game hooks: the places where the shared runtime (input, renderer, file system, frame pacing) asks the game-specific
 // code something. In LAS Recomp these were Link's Awakening features (warp, mirror mode, widescreen camera, pots, pets,
 // save editor, extra flags); for DOAX3 they answer "nothing special" until a DOAX3 counterpart is written.
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -37,19 +38,71 @@ uint64_t rt_render3d_size(uint64_t orig) {
 // ---- the frame rate (tools/patches.py FRAME_MODE_*): the engine's frame mode picks its present interval, logic steps
 // per frame and time step together (mode 0: 60 fps, 1 step of 1/60 s; mode 1, the Switch game's: 30 fps, 2 steps;
 // mode 2: 20 fps, 3). Its stores of the mode come here: mode 1 becomes 0 for 60 fps - the same game speed, twice the
-// frames. 60 fps: the Video setting "fps60"; LARECOMP_FPS=30/60 (test) overrides it.
-static bool g_frame_60;  // the 60 fps mode is on (rt_frame_mode turned the game's 30 into it)
+// frames. 60 fps: the Video setting "fps60"; LARECOMP_FPS=30/60/120 (test) overrides it.
+// 120 fps ("fps120" as well): the engine has no such mode, so it runs in mode 0 and every frame is half of one of its
+// 60 fps frames: its step count, time step and float step are halved where the game reads them (rt_steps_*,
+// rt_time_step, rt_game_step; tools/patches.py STEPS_FN) and frames are paced at 120 Hz (runtime/nvn/objects.c).
+static bool g_frame_60;   // the 60 fps mode is on (rt_frame_mode turned the game's 30 into it)
+static bool g_frame_120;  // and each of its frames is half a 60 fps frame
 uint32_t rt_frame_mode(uint32_t orig) {
     static int forced = -1;
     if (forced < 0) { const char *e = getenv("LARECOMP_FPS"); forced = e ? atoi(e) : 0; }
     bool fps60 = forced ? forced >= 60 : g_settings.fps60;
+    bool fps120 = forced ? forced >= 120 : g_settings.fps60 && g_settings.fps120;
     uint32_t mode = fps60 && orig == 1 ? 0 : orig;
+    g_frame_60 = mode != orig;
+    g_frame_120 = g_frame_60 && fps120;
     static uint32_t last_orig = ~0u, last_mode = ~0u;
     if (orig != last_orig || mode != last_mode)
-        LOG("[game] frame mode %u -> %u (%s)\n", orig, mode, mode == 0 ? "60 fps" : mode == 1 ? "30 fps" : "20 fps");
+        LOG("[game] frame mode %u -> %u (%s)\n", orig, mode,
+            g_frame_120 ? "120 fps" : mode == 0 ? "60 fps" : mode == 1 ? "30 fps" : "20 fps");
     last_orig = orig, last_mode = mode;
-    g_frame_60 = mode != orig;
     return mode;
+}
+
+// The frame rate frames are paced at (runtime/nvn/objects.c present_pace): 120 in the 120 fps mode, else the game's
+// own (its present interval: 60 Hz vsyncs).
+int rt_frame_rate(void) { return g_frame_120 ? 120 : 60; }
+
+// Frames presented so far (runtime/nvn/objects.c): which half of a 60 fps frame this is.
+extern _Atomic uint64_t g_frames_presented;
+
+// The engine's logic steps per frame where the game uses them (tools/patches.py STEPS_FN); n is the mode's own (1 in
+// mode 0). As a float: half of it at 120 fps.
+static void steps_seen(int kind) {  // (the log says which uses ran at 120 fps, once each)
+    static const char *const names[] = {"as a float", "dividing ticks into frames", "on a tick counter"};
+    static bool seen[3];
+    if (!seen[kind]) seen[kind] = true, LOG("[game] 120 fps: logic steps per frame used %s\n", names[kind]);
+}
+float rt_steps_float(uint32_t n) {
+    if (!g_frame_120) return (float)n;
+    steps_seen(0);
+    return (float)n * 0.5f;
+}
+
+// A time in 1/60 s ticks divided by it, into frames the game then counts down one a frame: twice the frames at 120.
+// (By 0: 0, as the Switch's udiv.)
+uint32_t rt_steps_div(uint32_t ticks, uint32_t n) {
+    if (!n) return 0;
+    if (!g_frame_120) return ticks / n;
+    steps_seen(1);
+    return (uint32_t)((uint64_t)ticks * 2 / n);
+}
+
+// Added to or taken from a tick counter: at 120 fps on every other frame only, so it keeps the 60 ticks a second
+// (the same for every counter within a frame).
+uint32_t rt_steps_count(uint32_t n) {
+    if (!g_frame_120) return n;
+    steps_seen(2);
+    return (g_frames_presented & 1) ? n : 0;
+}
+
+// The time step (seconds per frame, 1/60 in mode 0): halved at 120 fps.
+float rt_time_step(float t) {
+    if (!g_frame_120) return t;
+    static bool logged;
+    if (!logged) logged = true, LOG("[game] 120 fps: the time step %g -> %g\n", t, t * 0.5f);
+    return t * 0.5f;
 }
 
 // The vsyncs the engine adds after frames it judged late (tools/patches.py FRAME_EXTRA). In the 60 fps mode they're
@@ -80,20 +133,20 @@ uint32_t rt_worker_state(uint64_t addr, uint32_t wanted) {
 
 // The game's step (tools/patches.py GAME_STEP): the float its main update hands every system, in 30 fps frames (1.0 a
 // frame), at `ptr`; the update reads its address here once a frame, before any system runs. In the 60 fps mode it is
-// halved, so animation, cameras, cutscenes and gameplay keep their speed. A value the game stores itself (it's 1.0 for
-// the whole game so far; a slow motion would change it) is halved the next frame: what's there and isn't what we
-// stored is the game's.
+// halved (a quarter at 120 fps), so animation, cameras, cutscenes and gameplay keep their speed. A value the game
+// stores itself (it's 1.0 for the whole game so far; a slow motion would change it) is scaled the next frame: what's
+// there and isn't what we stored is the game's.
 uint64_t rt_game_step(uint64_t ptr) {
     static uint32_t stored;  // (the bits we last wrote; 0: none)
     float *step = (float *)(uintptr_t)ptr;
     uint32_t bits;
     memcpy(&bits, step, 4);
     if (!g_frame_60 || bits == stored) return ptr;
-    float half = *step * 0.5f;
-    memcpy(&stored, &half, 4);
+    float scaled = *step * (g_frame_120 ? 0.25f : 0.5f);
+    memcpy(&stored, &scaled, 4);
     if (!stored) stored = 1;  // (0.0 stays 0.0, but must not read as "nothing stored")
-    LOG("[game] 60 fps: the game's step %g -> %g\n", *step, half);
-    *step = half;
+    LOG("[game] %d fps: the game's step %g -> %g\n", g_frame_120 ? 120 : 60, *step, scaled);
+    *step = scaled;
     return ptr;
 }
 

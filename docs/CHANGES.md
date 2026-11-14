@@ -224,6 +224,54 @@ route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
   windows at 60.0; dips only at loads). The game uncapped runs at 230-250 fps, worst frame 8 ms.
 - `LARECOMP_LOG_INTERVAL=1` now logs the guest call stack of each present-interval change.
 
+## 120 fps
+
+- **No such mode in the engine:** its frame modes stop at 60 fps (mode 0). The 120 fps mode runs mode 0, and every
+  frame is half of one of its frames. Three values carry the step into the game, and each is halved where it's read:
+  - **The step count** (1.0.6 0x700038f640: logic steps per frame, an integer, 1 in mode 0). An integer can't hold
+    half, so each of its 34 call sites is patched by what it does with it (`tools/patches.py` STEPS_FN, found by the
+    instruction after the call):
+    - 8 convert it to a float and multiply (`ucvtf`): 0.5 (`rt_steps_float`);
+    - 12 divide a time in 1/60 s ticks by it into a number of frames, then count that down by one a frame (`udiv`):
+      twice the frames (`rt_steps_div`). Found in 0x7000159320: +0xe8 = ticks / steps, then -1 a frame;
+    - 11 add it to or take it from a tick counter (`add` / `sub`): the step on every other frame, so 60 ticks a second
+      (`rt_steps_count`, by the presented frame count);
+    - 3 don't use it.
+  - **The time step** (0x700038f690, seconds per frame, 1/60 in mode 0): 1/120 (`rt_time_step`, TIME_STEP).
+  - **The game's float step** (GAME_STEP): 0.25 instead of 0.5 (`rt_game_step`).
+- **Pacing:** `present_pace` paces at 120 Hz in this mode (a display within 0.5% of 120 Hz sets the grid, as at 60).
+- **Setting:** `fps120 = 1` with `fps60 = 1` in larecomp.ini, Video > Rendering > "Frame rate", the launcher's Frame
+  rate, or RecompLauncher's. `fps60 = 0` is always 30 fps, so a launcher that only knows `fps60` still decides.
+  `LARECOMP_FPS=120` (test). `tools/route.sh` stretches its presses 4x at 120.
+- **Checked** (RTX 3060, 1440p 3D, a 144 Hz display):
+  - **Speed:** screenshot series at the same game times, matched shot by shot. The select route: 120 against 30 at
+    1.02. The relax route: 120 against 60 at 1.047, the same as 60 against 30 (1.047), so that 5% is the route and
+    the matching, not the mode.
+  - **Frame rate:** 120.0 fps in two-second windows, dips to 100-111 fps at loads and in heavy volleyball scenes with
+    SMAA.
+  - **Not reached by the test routes:** the patched divisions and tick counters (0x7000155000-0x700015f000, an
+    unknown system). Their handling follows the code above, but no run has used them yet; at 120 fps the log says
+    when one is used for the first time (`[game] 120 fps: logic steps per frame used ...`).
+  - **Menus:** holding a direction repeats by time (0x700063b3c0 counts down the real time since the last frame), so
+    it keeps its speed; finer frames make the repeat about 1.2x as fast as at 30 fps (the countdown overshoots less).
+
+## Texture filtering (anisotropic)
+
+- **Setting:** `anisotropy` in larecomp.ini (0: the game's own, 2, 4, 8, 16), Video > Rendering > "Texture
+  filtering", the launcher and RecompLauncher. At least that much on every mipmapped, linearly filtered sampler; not
+  on depth compares (shadows). Applies at the next start (samplers are made once).
+- **The game makes about 10 samplers**, shared by all its textures, and asks for no anisotropy on any. 7 are
+  mipmapped and get it. 16x visibly sharpens the sea and the sand at a distance. `LARECOMP_LOG_SAMPLERS=1` logs each.
+
+## Settings that don't apply here, removed
+
+- **Internal resolution** (LAS Recomp's render scale): any scale but 1x breaks DOAX3's deferred lighting (its compute
+  pass stores at the game's pixel coordinates). The Video tab no longer shows it, and the game uses 1x whatever an
+  older larecomp.ini says (`settings_resolve_defaults`). The 3D resolution is the sharpness setting.
+- **Aspect ratio:** it had no effect (DOAX3 keeps 16:9: `widescreen_allowed`), so it's gone from the Video tab.
+- Every PC setting that works is also in the launcher and RecompLauncher: frame rate, 3D resolution, anti-aliasing,
+  texture filtering, upscaler, Show FPS, background controller input, controls.
+
 ## Worker handshake race (`tools/patches.py` WORKER_KICK, `rt_worker_state`)
 
 - **Symptom:** the game froze now and then with a `[hang]` dump: the main thread and a worker (priority 34) each in one

@@ -84,12 +84,52 @@
     },
     {
       "id": "fps60", "label": "Frame rate",
-      "help": "60 draws twice as many frames as the console's 30. The game keeps its normal speed either way.",
+      "help": "60 draws twice as many frames as the console's 30, and 120 four times as many (best on a 120 Hz or faster display). The game keeps its normal speed at every rate.",
       "choices": [
-        { "label": "30 (as on the console)", "set": { "fps60": "0" } },
-        { "label": "60", "set": { "fps60": "1" } }
+        { "label": "30 (as on the console)", "set": { "fps60": "0", "fps120": "0" } },
+        { "label": "60", "set": { "fps60": "1", "fps120": "0" } },
+        { "label": "120", "set": { "fps60": "1", "fps120": "1" } }
       ],
-      "defaults": { "fps60": "0" }
+      "defaults": { "fps60": "0", "fps120": "0" }
+    },
+    {
+      "id": "antialias", "label": "Anti-aliasing",
+      "help": "SMAA smooths jagged edges of the game image, blending only along them, so textures stay sharp.",
+      "choices": [
+        { "label": "Off", "set": { "antialias": "off" } },
+        { "label": "SMAA", "set": { "antialias": "smaa" } }
+      ],
+      "defaults": { "antialias": "off" }
+    },
+    {
+      "id": "anisotropy", "label": "Texture filtering",
+      "help": "Anisotropic filtering keeps the sand, floors and water sharp where they're seen at an angle, further into the distance. 16x is the sharpest and costs very little on a dedicated graphics card.",
+      "choices": [
+        { "label": "As on the console", "set": { "anisotropy": "0" } },
+        { "label": "4x", "set": { "anisotropy": "4" } },
+        { "label": "8x", "set": { "anisotropy": "8" } },
+        { "label": "16x", "set": { "anisotropy": "16" } }
+      ],
+      "defaults": { "anisotropy": "0" }
+    },
+    {
+      "id": "upscaler", "label": "Upscaler",
+      "help": "How the game's 1080p image is scaled to your window or screen. AMD FSR 1 keeps edges sharp; bilinear is plain and soft. The default is FSR 1 on a dedicated graphics card and bilinear on an integrated one.",
+      "choices": [
+        { "label": "Default for your graphics card", "set": { "upscaler": "auto" } },
+        { "label": "AMD FSR 1", "set": { "upscaler": "fsr1" } },
+        { "label": "Bilinear", "set": { "upscaler": "bilinear" } }
+      ],
+      "defaults": { "upscaler": "auto" }
+    },
+    {
+      "id": "background_input", "label": "Controller in the background",
+      "help": "The controller keeps working while another window is in front.",
+      "choices": [
+        { "label": "On", "set": { "background_input": "1" } },
+        { "label": "Off", "set": { "background_input": "0" } }
+      ],
+      "defaults": { "background_input": "1" }
     },
     {
       "id": "show_fps", "label": "Show FPS",

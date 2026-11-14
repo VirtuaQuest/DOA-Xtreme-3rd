@@ -131,7 +131,9 @@ void settings_resolve_defaults(bool integrated) {
     // after the match's save).
     g_default_render3d = integrated ? R3D_ORIGINAL : R3D_1440;
     if (g_settings.upscaler_auto) g_settings.upscaler = g_default_upscaler;
-    if (g_settings.res_auto) g_settings.res_mode = g_default_res_mode;
+    // Always 1x, whatever an older larecomp.ini says: any other scale breaks the deferred lighting (above), so the menu
+    // no longer offers it. (LARECOMP_SCALE still forces one, for tests.)
+    g_settings.res_auto = true, g_settings.res_mode = g_default_res_mode;
     if (g_settings.render3d_auto) g_settings.render3d = g_default_render3d;
     LOG("[settings] 3D resolution %s (%s)\n", r3d_names[g_settings.render3d], g_settings.render3d_auto ? "default" : "chosen");
     LOG("[settings] %s GPU: upscaler %s (%s), resolution %s (%s), anti-aliasing %s\n", integrated ? "integrated" : "discrete / other",
@@ -185,6 +187,11 @@ void settings_load(void) {
             else g_settings.upscaler = g_default_upscaler;
         }
         else if (!strcmp(key, "fps60")) g_settings.fps60 = atoi(val) != 0;
+        else if (!strcmp(key, "fps120")) g_settings.fps120 = atoi(val) != 0;
+        else if (!strcmp(key, "anisotropy")) {  // (0: the game's own; else 2, 4, 8 or 16)
+            int a = atoi(val);
+            g_settings.anisotropy = a >= 16 ? 16 : a >= 8 ? 8 : a >= 4 ? 4 : a >= 2 ? 2 : 0;
+        }
         else if (!strcmp(key, "render3d")) {  // (auto: never chosen, the GPU's default)
             g_settings.render3d_auto = true;
             for (int i = 0; i < 4; i++)
@@ -279,6 +286,8 @@ void settings_save(void) {
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
     fprintf(f, "render3d = %s\n", g_settings.render3d_auto ? "auto" : r3d_names[g_settings.render3d & 3]);
     fprintf(f, "fps60 = %d\n", g_settings.fps60);
+    fprintf(f, "fps120 = %d\n", g_settings.fps120);
+    fprintf(f, "anisotropy = %d\n", g_settings.anisotropy);
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "rumble = %d\n", g_settings.rumble);

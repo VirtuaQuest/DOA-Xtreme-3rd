@@ -831,15 +831,19 @@ NVN(nvnQueueAcquireTexture) {
 // late by more than a slot starts the grid over (no catching up). LARECOMP_PRESENT_PACE=0: off (uncapped).
 // A display within 0.5% of 60 Hz (59.94 Hz panels) sets the grid instead: at 60.000 the frames gained one on it every
 // ~17 s, which the mailbox swapchain dropped (a hitch); the game runs that 0.1% slower instead.
+// The 120 fps mode (runtime/hle/game_hooks.c rt_frame_rate) paces at 120 Hz the same way (119.88 Hz displays: theirs).
+_Atomic uint64_t g_frames_presented;
 static void present_pace(int interval) {
+    atomic_fetch_add(&g_frames_presented, 1);
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_PRESENT_PACE"); on = !e || atoi(e) != 0; }
     if (!on || interval <= 0) return;
     if (interval > 4) interval = 4;
     static uint64_t next;
     extern _Atomic uint64_t g_display_period_ns;  // (device.c, metal.m: 0 unknown)
-    uint64_t vsync = atomic_load(&g_display_period_ns);
-    if (vsync < 16583334 || vsync > 16750000) vsync = 16666667;
+    extern int rt_frame_rate(void);
+    uint64_t vsync = atomic_load(&g_display_period_ns), base = rt_frame_rate() == 120 ? 8333333 : 16666667;
+    if (vsync < base - base / 200 || vsync > base + base / 200) vsync = base;
     uint64_t period = vsync * (uint64_t)interval, now = plat_now_ns();
     if (!next || now > next + period) next = now;
     else if (next > now) plat_sleep_until_ns(next);

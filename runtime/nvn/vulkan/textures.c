@@ -14,6 +14,7 @@
 #include "../tex_hash.h"
 #include "../renderer.h"
 #include "../texpatch.h"
+#include "../../settings.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -1376,6 +1377,22 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     si.mipLodBias = d->lod_bias;
     if (d->max_aniso > 1) { si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = fminf(d->max_aniso, 16); }
+    {   // LARECOMP_LOG_SAMPLERS=1 (debug): each sampler the game creates (filters, its anisotropy)
+        static int on = -1;
+        if (on < 0) on = getenv("LARECOMP_LOG_SAMPLERS") != NULL;
+        if (on) LOG("[vk] sampler: min %u mag %u aniso %g lod %g..%g bias %g compare %u\n", mf, d->mag_filter,
+                    (double)d->max_aniso, (double)d->lod_min, (double)d->lod_max, (double)d->lod_bias, d->compare_mode);
+    }
+    // The Video setting "Texture filtering" (anisotropy): at least that much on the game's mipmapped, filtered textures
+    // (floors, sand and water seen at an angle stay sharp further away). Not depth compares (shadows) or unfiltered ones.
+    if (g_settings.anisotropy > 1 && mf > 1 && si.magFilter == VK_FILTER_LINEAR && !d->compare_mode &&
+        (!si.anisotropyEnable || si.maxAnisotropy < g_settings.anisotropy)) {
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy = (float)g_settings.anisotropy;
+        static unsigned raised;
+        raised++;
+        if ((raised & (raised - 1)) == 0) LOG("[vk] texture filtering: %ux anisotropic on %u samplers\n", g_settings.anisotropy, raised);
+    }
     static float lodmin = -1;
     if (lodmin < 0) lodmin = getenv("LARECOMP_LOD_MIN") ? (float)atof(getenv("LARECOMP_LOD_MIN")) : 0;
     if (lodmin > 0 && mf > 1) si.minLod = fmaxf(si.minLod, lodmin);

@@ -50,13 +50,14 @@ if [ "$fresh" = 1 ]; then
 fi
 [ -n "$shots" ] && export LARECOMP_SHOT_AT="$shots"
 # The presses are timed in 30 fps frames: 30 fps unless LARECOMP_FPS says otherwise (not larecomp.ini's fps60); at 60
-# fps their frames and lengths are doubled (screenshot frames are not).
+# or 120 fps their frames and lengths are doubled or quadrupled (screenshot frames are not).
 export LARECOMP_FPS="${LARECOMP_FPS:-30}"
 # Your own keyboard, mouse and controllers work during a route too, so you can take over or help (the runtime ignores
 # them in scripted runs unless told otherwise). A press of yours shifts the route's timing: LARECOMP_NO_USER_INPUT=1
 # keeps a run strictly scripted.
 export LARECOMP_NO_USER_INPUT="${LARECOMP_NO_USER_INPUT:-0}"
-[ "$LARECOMP_FPS" -ge 60 ] && in=$(echo "$in" | awk -F, -v OFS=, '{for (i = 1; i <= NF; i++) { split($i, p, ":"); $i = p[1] * 2 ":" p[2] ":" p[3] * 2 }; print}')
+k=$((LARECOMP_FPS >= 120 ? 4 : LARECOMP_FPS >= 60 ? 2 : 1))
+[ "$k" -gt 1 ] && in=$(echo "$in" | awk -F, -v OFS=, -v k="$k" '{for (i = 1; i <= NF; i++) { split($i, p, ":"); $i = p[1] * k ":" p[2] ":" p[3] * k }; print}')
 LARECOMP_INPUT="$in" tools/run.sh "$secs"
 if [ "$fresh" = 1 ]; then
     rm -rf save

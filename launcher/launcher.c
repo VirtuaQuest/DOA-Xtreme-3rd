@@ -1,6 +1,7 @@
 // DOAX3 Recomp launcher (Windows): pick the display mode (windowed, borderless fullscreen, fullscreen), the
 // resolution, the 3D resolution and 60 fps, then start build/doax3recomp.exe as tools/run.sh does. The choices go into
-// larecomp.ini (fullscreen, fullscreen_mode, window_size, render3d, fps60: runtime/settings.c), so the game's own menu and
+// larecomp.ini (fullscreen, fullscreen_mode, window_size, render3d, fps60, fps120, antialias, anisotropy, upscaler,
+// show_fps, background_input: runtime/settings.c), so the game's own menu and
 // F11 keep working with them; every other line of the file is kept as it is. The controls choice writes the face buttons'
 // bind_pad_a/b/x/y lines (runtime/hle/bindings.c): "Switch controls" is the game's default and has no lines.
 // Two options, for RecompLauncher (recomplauncher.json), open no window: --prepare builds the game from the player's files
@@ -14,11 +15,11 @@
 #include <string.h>
 #include <wchar.h>
 
-enum { ID_MODE = 100, ID_RES, ID_R3D, ID_NOTE, ID_FPS60, ID_PAD };
+enum { ID_MODE = 100, ID_RES, ID_R3D, ID_NOTE, ID_FPS, ID_PAD, ID_AA, ID_AF, ID_UPS, ID_SHOWFPS, ID_BGIN };
 enum { MODE_WINDOWED, MODE_BORDERLESS, MODE_FULLSCREEN };
 
 static wchar_t g_exe_dir[MAX_PATH], g_root[MAX_PATH], g_game[MAX_PATH], g_ini[MAX_PATH], g_title[0x201];
-static HWND g_mode, g_res, g_r3d, g_note, g_fps60, g_pad;
+static HWND g_mode, g_res, g_r3d, g_note, g_fps, g_pad, g_aa, g_af, g_ups, g_showfps, g_bgin;
 static HFONT g_font, g_bold;
 static int g_dpi = 96;
 static struct { int w, h; } g_sizes[128];
@@ -28,6 +29,16 @@ static const wchar_t *const k_modes[] = {L"Windowed", L"Borderless fullscreen", 
 static const char *const k_r3d_keys[] = {"auto", "original", "1080p", "1440p", "4k"};  // (larecomp.ini render3d)
 static const wchar_t *const k_r3d_names[] = {L"Default for your GPU", L"Original (1600x900)", L"1920x1080",
                                              L"2560x1440", L"3840x2160 (may run out of memory)"};
+// Frame rate (fps60, and fps120 with it), anti-aliasing (antialias) and texture filtering (anisotropy)
+static const wchar_t *const k_fps_names[] = {L"30 (as on the Switch)", L"60", L"120 (for 120 Hz and faster displays)"};
+static const wchar_t *const k_aa_names[] = {L"Off", L"SMAA"};
+static const wchar_t *const k_af_names[] = {L"As on the Switch", L"2x anisotropic", L"4x anisotropic", L"8x anisotropic",
+                                            L"16x anisotropic"};
+static const int k_af_vals[] = {0, 2, 4, 8, 16};
+// Upscaler: how the game's 1080p image is scaled to the window or screen (auto: the game's default for the GPU, FSR 1
+// on a dedicated one, bilinear on an integrated one)
+static const char *const k_ups_keys[] = {"auto", "fsr1", "bilinear"};
+static const wchar_t *const k_ups_names[] = {L"Default for your GPU", L"AMD FSR 1 (sharper)", L"Bilinear (softer)"};
 // The controller's face buttons, by position (south, east, west, north). Switch controls: the game's A on the right
 // button, as on a Switch; Other: A and B swapped, X and Y swapped (A at the bottom, as on an Xbox pad).
 enum { PAD_SWITCH, PAD_OTHER, PAD_CUSTOM };
@@ -187,7 +198,18 @@ static void load_choices(void) {
     for (int i = 1; i < 5; i++)
         if (!strcmp(ini_get("render3d"), k_r3d_keys[i])) r3d = i;
     SendMessageW(g_r3d, CB_SETCURSEL, r3d, 0);
-    SendMessageW(g_fps60, BM_SETCHECK, atoi(ini_get("fps60")) ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(g_fps, CB_SETCURSEL, !atoi(ini_get("fps60")) ? 0 : atoi(ini_get("fps120")) ? 2 : 1, 0);
+    const char *aa = ini_get("antialias");  // (the game: anything but "off" is SMAA; no line: off)
+    SendMessageW(g_aa, CB_SETCURSEL, *aa && strcmp(aa, "off") ? 1 : 0, 0);
+    int af = 0;
+    for (int i = 1; i < 5; i++)
+        if (atoi(ini_get("anisotropy")) >= k_af_vals[i]) af = i;
+    SendMessageW(g_af, CB_SETCURSEL, af, 0);
+    const char *ups = ini_get("upscaler");  // ("metalfx": the macOS name of the sharp one)
+    SendMessageW(g_ups, CB_SETCURSEL, !strcmp(ups, "bilinear") ? 2 : !*ups || !strcmp(ups, "auto") ? 0 : 1, 0);
+    SendMessageW(g_showfps, BM_SETCHECK, atoi(ini_get("show_fps")) ? BST_CHECKED : BST_UNCHECKED, 0);
+    const char *bg = ini_get("background_input");  // (no line: on, the game's default on Windows)
+    SendMessageW(g_bgin, BM_SETCHECK, !*bg || atoi(bg) ? BST_CHECKED : BST_UNCHECKED, 0);
     int sw = 1, ot = 1;  // (no line: the game's default)
     for (int i = 0; i < 4; i++) {
         const char *v = ini_get(k_face_keys[i]);
@@ -211,7 +233,17 @@ static BOOL save_choices(void) {
         ini_set("window_size", v);
     }
     ini_set("render3d", k_r3d_keys[r3d < 0 ? 0 : r3d]);
-    ini_set("fps60", SendMessageW(g_fps60, BM_GETCHECK, 0, 0) == BST_CHECKED ? "1" : "0");
+    int fps = (int)SendMessageW(g_fps, CB_GETCURSEL, 0, 0), af = (int)SendMessageW(g_af, CB_GETCURSEL, 0, 0);
+    ini_set("fps60", fps >= 1 ? "1" : "0");
+    ini_set("fps120", fps == 2 ? "1" : "0");
+    ini_set("antialias", SendMessageW(g_aa, CB_GETCURSEL, 0, 0) == 1 ? "smaa" : "off");
+    char afv[8];
+    snprintf(afv, sizeof afv, "%d", k_af_vals[af < 0 ? 0 : af]);
+    ini_set("anisotropy", afv);
+    int ups = (int)SendMessageW(g_ups, CB_GETCURSEL, 0, 0);
+    ini_set("upscaler", k_ups_keys[ups < 0 ? 0 : ups]);
+    ini_set("show_fps", SendMessageW(g_showfps, BM_GETCHECK, 0, 0) == BST_CHECKED ? "1" : "0");
+    ini_set("background_input", SendMessageW(g_bgin, BM_GETCHECK, 0, 0) == BST_CHECKED ? "1" : "0");
     int pad = (int)SendMessageW(g_pad, CB_GETCURSEL, 0, 0);
     if (pad == PAD_SWITCH || pad == PAD_OTHER) {
         // A control the game's menu moved onto a face button goes back to its own button, so no two share one.
@@ -392,11 +424,21 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         for (int i = 0; i < 5; i++) SendMessageW(g_r3d, CB_ADDSTRING, 0, (LPARAM)k_r3d_names[i]);
         g_pad = add_combo(hwnd, L"Controls", 164, ID_PAD);
         for (int i = 0; i < 2; i++) SendMessageW(g_pad, CB_ADDSTRING, 0, (LPARAM)k_pad_names[i]);
-        g_fps60 = add(hwnd, L"BUTTON", L"60 fps (the game keeps its normal speed)", BS_AUTOCHECKBOX | WS_TABSTOP, 150, 200,
-                      280, 22, ID_FPS60, g_font);
-        g_note = add(hwnd, L"STATIC", L"", SS_LEFT, 20, 232, 410, 20, ID_NOTE, g_font);
-        add(hwnd, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 240, 266, 92, 30, IDOK, g_font);
-        add(hwnd, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 338, 266, 92, 30, IDCANCEL, g_font);
+        g_fps = add_combo(hwnd, L"Frame rate", 200, ID_FPS);
+        for (int i = 0; i < 3; i++) SendMessageW(g_fps, CB_ADDSTRING, 0, (LPARAM)k_fps_names[i]);
+        g_aa = add_combo(hwnd, L"Anti-aliasing", 236, ID_AA);
+        for (int i = 0; i < 2; i++) SendMessageW(g_aa, CB_ADDSTRING, 0, (LPARAM)k_aa_names[i]);
+        g_af = add_combo(hwnd, L"Texture filtering", 272, ID_AF);
+        for (int i = 0; i < 5; i++) SendMessageW(g_af, CB_ADDSTRING, 0, (LPARAM)k_af_names[i]);
+        g_ups = add_combo(hwnd, L"Upscaler", 308, ID_UPS);
+        for (int i = 0; i < 3; i++) SendMessageW(g_ups, CB_ADDSTRING, 0, (LPARAM)k_ups_names[i]);
+        g_showfps = add(hwnd, L"BUTTON", L"Show FPS (the frame rate in a corner)", BS_AUTOCHECKBOX | WS_TABSTOP, 150, 344,
+                        280, 22, ID_SHOWFPS, g_font);
+        g_bgin = add(hwnd, L"BUTTON", L"Controller works in the background", BS_AUTOCHECKBOX | WS_TABSTOP, 150, 370, 280,
+                     22, ID_BGIN, g_font);
+        g_note = add(hwnd, L"STATIC", L"", SS_LEFT, 20, 404, 410, 20, ID_NOTE, g_font);
+        add(hwnd, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 240, 436, 92, 30, IDOK, g_font);
+        add(hwnd, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 338, 436, 92, 30, IDCANCEL, g_font);
         load_choices();
         SetFocus(GetDlgItem(hwnd, IDOK));
         return 0;
@@ -450,7 +492,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show) {
                     .hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1))};
     RegisterClassW(&wc);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = {0, 0, px(450), px(314)};
+    RECT r = {0, 0, px(450), px(484)};
     AdjustWindowRectExForDpi(&r, style, FALSE, 0, g_dpi);
     int w = r.right - r.left, h = r.bottom - r.top;
     wchar_t caption[0x220];

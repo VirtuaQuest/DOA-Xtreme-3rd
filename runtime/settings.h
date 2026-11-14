@@ -40,7 +40,9 @@ typedef struct {
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     int render3d;        // R3D_*: the 3D scene's resolution
     bool render3d_auto;  // never chosen: the default for this GPU (settings_resolve_defaults); saved as "auto"
-    bool fps60;          // the game's 60 fps frame mode instead of its 30 (runtime/hle/game_hooks.c rt_frame_base)
+    bool fps60;          // the game's 60 fps frame mode instead of its 30 (runtime/hle/game_hooks.c rt_frame_mode)
+    bool fps120;         // with fps60: 120 fps, half a 60 fps step a frame (game_hooks.c, tools/patches.py STEPS_FN)
+    int anisotropy;      // anisotropic filtering of the game's mipmapped textures: 0 (the game's own), 2, 4, 8, 16
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;

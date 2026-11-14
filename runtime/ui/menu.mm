@@ -406,10 +406,7 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
-    const char *aspects[] = {"Unlocked", "Original 16:9"};
-    opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
-               "Unlocked: the view fills the window, so wider (or taller) windows show more of the island - up to "
-               "ultrawide; houses and dungeons keep their framing. Original 16:9: the game's own framing, with bars.");
+    // (No aspect ratio: DOAX3 keeps 16:9 - runtime/hle/game_hooks.c widescreen_allowed.)
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -418,31 +415,8 @@ static void tab_display(void) {
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
 
     opt_section("Rendering");
-    // display order -> RES_* (the ini / enum order predates the menu order)
-    // (up to 4x: 7680 x 4320, 8K - more only ran out of GPU memory, and sat next to 75% in the list)
-    // (Match display in the middle: left from it 75% / 50% / 25%, right Dynamic then 1x-4x; user 2026-10-11)
-    static const char *res[] = {"25%", "50%", "75%", "Match display", "Dynamic", "1x", "2x", "3x", "4x"};
-    static const int res_mode[] = {RES_Q25, RES_Q50, RES_Q75, RES_MATCH, RES_DYNAMIC, 1, 2, 3, 4};
-    enum { RES_MATCH_AT = 3 };
-    enum { NRES = sizeof res_mode / sizeof res_mode[0] };
-    {
-        int ri = RES_MATCH_AT, rdef = RES_MATCH_AT;  // (rdef: the GPU's default - Dynamic on an integrated GPU)
-        for (int i = 0; i < NRES; i++) {
-            if (res_mode[i] == g_settings.res_mode) ri = i;
-            if (res_mode[i] == g_default_res_mode) rdef = i;
-        }
-        float sx, sy;
-        renderer_get_scale(&sx, &sy);
-        char d[400];
-        int n = snprintf(d, sizeof d, "How sharp the 3D image is. Match display: your screen's own resolution. Dynamic: "
-                                      "as sharp as your GPU keeps at full speed. 1x-4x: the Switch's 1080p times that%s. "
-                                      "75%% / 50%% / 25%%: a share of the display, for slower machines.\n\nRendering at "
-                                      "%.0f x %.0f.", g_gpu_integrated ? " (1x: 720p on this GPU)" : "", 1920.0 * sx, 1080.0 * sy);
-        if (g_settings.res_mode == RES_DYNAMIC)
-            snprintf(d + n, sizeof d - n, " Dynamic: %.0f%% of the display right now.", output_scale_dynamic_factor() * 100);
-        if (opt_choice("Internal resolution", &ri, res, NRES, rdef, d, false))
-            g_settings.res_mode = res_mode[ri], g_settings.res_auto = false;
-    }
+    // (No internal resolution: always 1x, the game's own target sizes - any other scale breaks its deferred lighting;
+    // runtime/settings.c settings_resolve_defaults. The 3D resolution is the sharpness setting.)
     {   // the game's own 3D scene size (runtime/hle/game_hooks.c rt_render3d_size): its render targets are made at boot
         static const char *r3d[] = {"Original (900p)", "1080p", "1440p", "4K"};
         if (opt_choice("3D resolution", &g_settings.render3d, r3d, 4, g_default_render3d,
@@ -451,34 +425,45 @@ static void tab_display(void) {
                        "sharpest, smoothest edges.\n\nTakes effect the next time the game starts."))
             g_settings.render3d_auto = false;
     }
-    opt_toggle("60 fps", &g_settings.fps60, false,
-               "Runs the game in its engine's 60 fps mode (the Switch game uses its 30 fps mode): one game step of "
-               "1/60 s per frame, so the game plays at its normal speed, twice as smoothly.\n\nTakes effect the next "
-               "time the game starts.");
+    {   // fps60 / fps120 (runtime/hle/game_hooks.c rt_frame_mode)
+        static const char *rates[] = {"30 (Switch)", "60", "120"};
+        int ri = !g_settings.fps60 ? 0 : g_settings.fps120 ? 2 : 1;
+        if (opt_choice("Frame rate", &ri, rates, 3, 0,
+                       "30: the Switch game's own. 60: the engine's own 60 fps mode, one game step of 1/60 s per "
+                       "frame. 120: half of that step per frame (best on a 120 Hz or faster display). The game plays "
+                       "at its normal speed at every rate, just more smoothly.\n\nTakes effect the next time the game "
+                       "starts.", false))
+            g_settings.fps60 = ri >= 1, g_settings.fps120 = ri == 2;
+    }
     {   // each OS's own upscaler next to bilinear (UPSCALE_SHARP: MetalFX on macOS, AMD FSR 1 on Windows)
 #ifdef __APPLE__
         static const char *ups[] = {"Bilinear", "MetalFX"};
-        const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. MetalFX: Apple's "
-                         "upscaler, sharper. Bilinear: plain and soft.";
+        const char *ud = "How the game's 1080p image is scaled to the window or screen. MetalFX: Apple's upscaler, "
+                         "sharper. Bilinear: plain and soft.";
 #else
         static const char *ups[] = {"Bilinear", "AMD FSR 1"};
-        const char *ud = "How the image is scaled up to the window when it renders at a lower resolution. AMD FSR 1: "
-                         "edge-aware upscaling and sharpening, sharper. Bilinear: plain and soft.";
+        const char *ud = "How the game's 1080p image is scaled to the window or screen. AMD FSR 1: edge-aware scaling "
+                         "and sharpening, sharper. Bilinear: plain and soft.";
 #endif
         int ui = g_settings.upscaler == UPSCALE_BILINEAR ? 0 : 1;
-        char udm[512];
-        if (g_settings.res_mode == RES_MATCH) {  // (renders at the window's size: nothing to scale up)
-            snprintf(udm, sizeof udm, "%s\n\nNot used at Match display: the game already renders at your display's resolution.", ud);
-            ud = udm;
-            opt_disable_next();
-        }
         if (opt_choice("Upscaler", &ui, ups, 2, g_default_upscaler == UPSCALE_BILINEAR ? 0 : 1, ud))
             g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR, g_settings.upscaler_auto = false;
     }
     static const char *aa[] = {"Off", "SMAA"};
     opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
-               "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
+               "blends only along them, so textures stay sharp.");
+    {   // anisotropy (runtime/nvn/vulkan/textures.c vk_sampler)
+        static const char *af[] = {"Switch", "2x", "4x", "8x", "16x"};
+        static const int af_val[] = {0, 2, 4, 8, 16};
+        int ai = 0;
+        for (int i = 0; i < 5; i++) if (af_val[i] == g_settings.anisotropy) ai = i;
+        if (opt_choice("Texture filtering", &ai, af, 5, 0,
+                       "Anisotropic filtering: keeps the sand, floors and water sharp where they're seen at an angle, "
+                       "further into the distance. Switch: the game's own filtering. 16x: the sharpest; costs very "
+                       "little on a dedicated GPU.\n\nTakes effect the next time the game starts.", false))
+            g_settings.anisotropy = af_val[ai];
+    }
 
     opt_section("Game");
     opt_toggle("Remove blur", &g_settings.blur_removal, false,

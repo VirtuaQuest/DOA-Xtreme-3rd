@@ -9,6 +9,7 @@ screen itself). The store of levels 0 and 1 is replaced by one that asks the run
 (rt_render3d_size, runtime/hle/game_hooks.c), so the 3D resolution is a setting.
 """
 import struct
+import sys
 
 RENDER_CONFIG = (
     0xB2190FE8,  # mov  x8, #0x78000000780      (orr: 1920 | 1920 << 32; its movk makes it 1920 | 1080 << 32)
@@ -105,6 +106,98 @@ def game_step_load(module, a):
             f'  /* {a:#x}: the game\'s step (tools/patches.py) */')
 
 
+# 120 fps. The engine has no 120 fps frame mode, so it runs in its 60 fps mode (mode 0: one logic step of 1/60 s a
+# frame) and the runtime makes each frame half of that. Three things carry the mode's step into the game:
+# - the step count (1.0.6 0x700038f640: logic steps per frame, an integer: 1 at 60 fps, 2 at 30). Its 34 callers use it
+#   in three ways, each patched where it's used (an integer can't hold half a step):
+#   - converted to a float and multiplied (ucvtf s, w0): 0.5 at 120 fps (rt_steps_float);
+#   - dividing a time in 1/60 s ticks into frames (udiv w, w, w0), then counted down by 1 a frame: twice the frames
+#     (rt_steps_div);
+#   - added to or taken from a tick counter (add / sub w, w, w0): 1 every other frame (rt_steps_count).
+#   (A few callers don't use the value.)
+# - the time step (1.0.6 0x700038f690: seconds per frame, 1/60 in mode 0): 1/120 (rt_time_step);
+# - the game's float step (GAME_STEP above): a quarter of the 30 fps one (rt_game_step).
+# At 30 and 60 fps all of these return what the game had.
+STEPS_FN = (
+    (0x90000008, 0x9F00001F),  # adrp x8, <page>
+    (0x91000108, 0xFFC003FF),  # add  x8, x8, #<frame records>
+    0xB9400509,                # ldr  w9, [x8, #4]          (the current record)
+    0x8B091108,                # add  x8, x8, x9, lsl #4
+    0x321E07E9,                # mov  w9, #0xc              (12 bytes a mode)
+    0xB9400D08,                # ldr  w8, [x8, #0xc]        (its mode)
+    (0x9000000A, 0x9F00001F),  # adrp x10, <page>
+    (0x9100014A, 0xFFC003FF),  # add  x10, x10, #<mode table>
+    0x9B092908,                # madd x8, x8, x9, x10
+    0xB9400900,                # ldr  w0, [x8, #8]          (the mode's logic steps per frame)
+    0xD65F03C0,                # ret
+)
+TIME_STEP = (
+    0xB9800D08,                # ldrsw x8, [x8, #0xc]       (the mode)
+    0x7100091F,                # cmp  w8, #2
+    (0x54000008, 0xFF00001F),  # b.hi <a default>
+    (0x90000009, 0x9F00001F),  # adrp x9, <page>
+    (0x91000129, 0xFFC003FF),  # add  x9, x9, #<time steps>
+    0xBC687920,                # ldr  s0, [x9, x8, lsl #2]  (the mode's time step)
+)
+
+
+def steps_float(d):
+    def emit(module, a):
+        return ('{ extern float rt_steps_float(uint32_t); '
+                f'FP_SETS({d}, rt_steps_float((uint32_t)c->x[0])); }}'
+                f'  /* {a:#x}: logic steps per frame, as a float (tools/patches.py) */')
+    return emit
+
+
+def steps_div(d, n):
+    def emit(module, a):
+        return ('{ extern uint32_t rt_steps_div(uint32_t, uint32_t); '
+                f'c->x[{d}] = rt_steps_div((uint32_t)c->x[{n}], (uint32_t)c->x[0]); }}'
+                f'  /* {a:#x}: ticks into frames (tools/patches.py) */')
+    return emit
+
+
+def steps_count(d, n, op):
+    def emit(module, a):
+        return ('{ extern uint32_t rt_steps_count(uint32_t); '
+                f'c->x[{d}] = (uint32_t)((uint32_t)c->x[{n}] {op} rt_steps_count((uint32_t)c->x[0])); }}'
+                f'  /* {a:#x}: a tick counter (tools/patches.py) */')
+    return emit
+
+
+def time_step_load(module, a):
+    return ('{ extern float rt_time_step(float); float t; '
+            'memcpy(&t, (const void *)(uintptr_t)(c->x[9] + (c->x[8] << 2)), 4); FP_SETS(0, rt_time_step(t)); }'
+            f'  /* {a:#x}: the time step (tools/patches.py) */')
+
+
+def steps_uses(module, fn):
+    """{address: emit} for the uses of the step count that follow each call to fn (see STEPS_FN), and the counts."""
+    out, kinds = {}, {'float': 0, 'div': 0, 'count': 0, 'unused': 0}
+    for i, w in enumerate(module.words):
+        if (w & 0xFC000000) != 0x94000000 or module.lo + i * 4 + (((w & 0x3FFFFFF) ^ 0x2000000) - 0x2000000) * 4 != fn:
+            continue
+        kind = 'unused'
+        for k in range(1, 5):  # (the use comes within 4 instructions: after a load of the counter, at most)
+            if i + k >= len(module.words):
+                break
+            u, a = module.words[i + k], module.lo + (i + k) * 4
+            d, n, m = u & 31, (u >> 5) & 31, (u >> 16) & 31
+            if (u & 0xFFFFFFE0) in (0x1E230000, 0x1E220000):        # ucvtf / scvtf s<d>, w0
+                out[a], kind = steps_float(d), 'float'
+            elif (u & 0xFFE0FC00) == 0x1AC00800 and m == 0:          # udiv w<d>, w<n>, w0
+                out[a], kind = steps_div(d, n), 'div'
+            elif (u & 0xFFE0FC00) in (0x0B000000, 0x4B000000) and m == 0 and n != 0:  # add / sub w<d>, w<n>, w0
+                out[a], kind = steps_count(d, n, '+' if u & 0x40000000 == 0 else '-'), 'count'
+            elif (u & 0x7C000000) == 0x14000000 or (u & 0x7E000000) == 0x34000000 or u == 0xD65F03C0:
+                break  # (a branch, call or return first: the value isn't used here)
+            else:
+                continue
+            break
+        kinds[kind] += 1
+    return out, kinds
+
+
 # A worker's state in a handshake with the main thread (1.0.6 0x70002bec70, the "kick"; the worker 0x70002bebd0): the
 # worker runs its job (state 1), sets state 2 and signals the main thread, then sets state 3 and waits for the next kick.
 # The kick wakes it only in state 3, and the main thread then waits for it regardless. Woken in the gap between the
@@ -153,4 +246,10 @@ def find(module):
     patches[module.lo + (i + 5) * 4] = game_step_load
     i = find_one(module.words, WORKER_KICK, 'worker kick')
     patches[module.lo + i * 4] = worker_state_load
+    i = find_one(module.words, STEPS_FN, 'logic steps per frame')
+    uses, kinds = steps_uses(module, module.lo + i * 4)
+    patches.update(uses)
+    print('game: logic steps per frame used as ' + ', '.join(f'{v} {k}' for k, v in kinds.items()), file=sys.stderr)
+    i = find_one(module.words, TIME_STEP, 'time step')
+    patches[module.lo + (i + 5) * 4] = time_step_load
     return patches
