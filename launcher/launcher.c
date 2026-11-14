@@ -1,7 +1,8 @@
 // DOAX3 Recomp launcher (Windows): pick the display mode (windowed, borderless fullscreen, fullscreen), the
 // resolution, the 3D resolution and 60 fps, then start build/doax3recomp.exe as tools/run.sh does. The choices go into
 // larecomp.ini (fullscreen, fullscreen_mode, window_size, render3d, fps60: runtime/settings.c), so the game's own menu and
-// F11 keep working with them; every other line of the file is kept as it is.
+// F11 keep working with them; every other line of the file is kept as it is. The controls choice writes the face buttons'
+// bind_pad_a/b/x/y lines (runtime/hle/bindings.c): "Switch controls" is the game's default and has no lines.
 // Two options, for RecompLauncher (recomplauncher.json), open no window: --prepare builds the game from the player's files
 // and --play starts it. Without them the launcher is as it was.
 #define WIN32_LEAN_AND_MEAN  // (UNICODE: -municode)
@@ -10,13 +11,14 @@
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 
-enum { ID_MODE = 100, ID_RES, ID_R3D, ID_NOTE, ID_FPS60 };
+enum { ID_MODE = 100, ID_RES, ID_R3D, ID_NOTE, ID_FPS60, ID_PAD };
 enum { MODE_WINDOWED, MODE_BORDERLESS, MODE_FULLSCREEN };
 
 static wchar_t g_exe_dir[MAX_PATH], g_root[MAX_PATH], g_game[MAX_PATH], g_ini[MAX_PATH], g_title[0x201];
-static HWND g_mode, g_res, g_r3d, g_note, g_fps60;
+static HWND g_mode, g_res, g_r3d, g_note, g_fps60, g_pad;
 static HFONT g_font, g_bold;
 static int g_dpi = 96;
 static struct { int w, h; } g_sizes[128];
@@ -26,6 +28,15 @@ static const wchar_t *const k_modes[] = {L"Windowed", L"Borderless fullscreen", 
 static const char *const k_r3d_keys[] = {"auto", "original", "1080p", "1440p", "4k"};  // (larecomp.ini render3d)
 static const wchar_t *const k_r3d_names[] = {L"Default for your GPU", L"Original (1600x900)", L"1920x1080",
                                              L"2560x1440", L"3840x2160 (may run out of memory)"};
+// The controller's face buttons, by position (south, east, west, north). Switch controls: the game's A on the right
+// button, as on a Switch; Other: A and B swapped, X and Y swapped (A at the bottom, as on an Xbox pad).
+enum { PAD_SWITCH, PAD_OTHER, PAD_CUSTOM };
+static const char *const k_face_keys[4] = {"bind_pad_a", "bind_pad_b", "bind_pad_x", "bind_pad_y"};
+static const char *const k_face_switch[4] = {"east", "south", "north", "west"};
+static const char *const k_face_other[4] = {"south", "east", "west", "north"};
+static const wchar_t *const k_pad_names[] = {L"Switch controls", L"Other (A and B, X and Y swapped)",
+                                             L"Custom (set in the game's menu)"};
+static int g_pad_found;  // (what larecomp.ini had: kept as it is while Custom stays chosen)
 
 static int px(int v) { return MulDiv(v, g_dpi, 96); }
 
@@ -71,6 +82,14 @@ static void ini_set(const char *key, const char *val) {
     int i = ini_find(key);
     if (i >= 0) free(g_lines[i]), g_lines[i] = _strdup(line);
     else if (g_nlines < 512) g_lines[g_nlines++] = _strdup(line);
+}
+
+static void ini_del(const char *key) {
+    int i = ini_find(key);
+    if (i < 0) return;
+    free(g_lines[i]);
+    memmove(g_lines + i, g_lines + i + 1, (g_nlines - i - 1) * sizeof *g_lines);
+    g_nlines--;
 }
 
 static BOOL ini_save(void) {
@@ -169,6 +188,15 @@ static void load_choices(void) {
         if (!strcmp(ini_get("render3d"), k_r3d_keys[i])) r3d = i;
     SendMessageW(g_r3d, CB_SETCURSEL, r3d, 0);
     SendMessageW(g_fps60, BM_SETCHECK, atoi(ini_get("fps60")) ? BST_CHECKED : BST_UNCHECKED, 0);
+    int sw = 1, ot = 1;  // (no line: the game's default)
+    for (int i = 0; i < 4; i++) {
+        const char *v = ini_get(k_face_keys[i]);
+        sw &= !*v || !strcmp(v, k_face_switch[i]);
+        ot &= !strcmp(v, k_face_other[i]);
+    }
+    g_pad_found = sw ? PAD_SWITCH : ot ? PAD_OTHER : PAD_CUSTOM;
+    if (g_pad_found == PAD_CUSTOM) SendMessageW(g_pad, CB_ADDSTRING, 0, (LPARAM)k_pad_names[PAD_CUSTOM]);
+    SendMessageW(g_pad, CB_SETCURSEL, g_pad_found, 0);
     update_note();
 }
 
@@ -184,6 +212,19 @@ static BOOL save_choices(void) {
     }
     ini_set("render3d", k_r3d_keys[r3d < 0 ? 0 : r3d]);
     ini_set("fps60", SendMessageW(g_fps60, BM_GETCHECK, 0, 0) == BST_CHECKED ? "1" : "0");
+    int pad = (int)SendMessageW(g_pad, CB_GETCURSEL, 0, 0);
+    if (pad == PAD_SWITCH || pad == PAD_OTHER) {
+        // A control the game's menu moved onto a face button goes back to its own button, so no two share one.
+        static const char *const others[] = {"bind_pad_lstick", "bind_pad_rstick", "bind_pad_l", "bind_pad_r",
+                                             "bind_pad_zl", "bind_pad_zr", "bind_pad_plus", "bind_pad_minus",
+                                             "bind_pad_left", "bind_pad_up", "bind_pad_right", "bind_pad_down"};
+        for (int i = 0; i < 12; i++)
+            for (int k = 0; k < 4; k++)
+                if (!strcmp(ini_get(others[i]), k_face_other[k])) { ini_del(others[i]); break; }
+        for (int i = 0; i < 4; i++)
+            if (pad == PAD_OTHER) ini_set(k_face_keys[i], k_face_other[i]);
+            else ini_del(k_face_keys[i]);
+    }
     return ini_save();
 }
 
@@ -349,11 +390,13 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         g_r3d = add_combo(hwnd, L"3D resolution", 128, ID_R3D);
         for (int i = 0; i < 5; i++) SendMessageW(g_r3d, CB_ADDSTRING, 0, (LPARAM)k_r3d_names[i]);
-        g_fps60 = add(hwnd, L"BUTTON", L"60 fps (the game keeps its normal speed)", BS_AUTOCHECKBOX | WS_TABSTOP, 150, 164,
+        g_pad = add_combo(hwnd, L"Controls", 164, ID_PAD);
+        for (int i = 0; i < 2; i++) SendMessageW(g_pad, CB_ADDSTRING, 0, (LPARAM)k_pad_names[i]);
+        g_fps60 = add(hwnd, L"BUTTON", L"60 fps (the game keeps its normal speed)", BS_AUTOCHECKBOX | WS_TABSTOP, 150, 200,
                       280, 22, ID_FPS60, g_font);
-        g_note = add(hwnd, L"STATIC", L"", SS_LEFT, 20, 196, 410, 20, ID_NOTE, g_font);
-        add(hwnd, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 240, 230, 92, 30, IDOK, g_font);
-        add(hwnd, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 338, 230, 92, 30, IDCANCEL, g_font);
+        g_note = add(hwnd, L"STATIC", L"", SS_LEFT, 20, 232, 410, 20, ID_NOTE, g_font);
+        add(hwnd, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 240, 266, 92, 30, IDOK, g_font);
+        add(hwnd, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 338, 266, 92, 30, IDCANCEL, g_font);
         load_choices();
         SetFocus(GetDlgItem(hwnd, IDOK));
         return 0;
@@ -407,7 +450,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show) {
                     .hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1))};
     RegisterClassW(&wc);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = {0, 0, px(450), px(278)};
+    RECT r = {0, 0, px(450), px(314)};
     AdjustWindowRectExForDpi(&r, style, FALSE, 0, g_dpi);
     int w = r.right - r.left, h = r.bottom - r.top;
     wchar_t caption[0x220];

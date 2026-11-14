@@ -99,6 +99,15 @@
         { "label": "On", "set": { "show_fps": "1" } }
       ],
       "defaults": { "show_fps": "0" }
+    },
+    {
+      "id": "controls", "label": "Controls",
+      "help": "Switch controls: the game's A is the right face button and B the bottom one, as on a Switch. Other: A and B are swapped, and X and Y, so A is the bottom button, as on an Xbox controller. Buttons can also be changed one by one in the game's menu (F1).",
+      "choices": [
+        { "label": "Switch controls", "set": { "bind_pad_a": "east", "bind_pad_b": "south", "bind_pad_x": "north", "bind_pad_y": "west" } },
+        { "label": "Other", "set": { "bind_pad_a": "south", "bind_pad_b": "east", "bind_pad_x": "west", "bind_pad_y": "north" } }
+      ],
+      "defaults": { "bind_pad_a": "east", "bind_pad_b": "south", "bind_pad_x": "north", "bind_pad_y": "west" }
     }
   ],
   "actions": [
