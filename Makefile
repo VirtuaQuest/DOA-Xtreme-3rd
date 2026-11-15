@@ -50,7 +50,9 @@ GAMELIB_FULL_ID := $(GAMELIB_ID)-$(or $(GAMELIB_BUILD),unknown)
 
 DLLS     := $(B)/dlls.stamp
 
-all: $(EXE) $(LAUNCHER) $(DLLS) $(if $(GEN_SRC),$(GAMELIB))
+LAUNCHER_ART := $(if $(wildcard extracted/romfs/00/package_data.bin),$(B)/launcher_art/logo.png)
+
+all: $(EXE) $(LAUNCHER) $(DLLS) $(if $(GEN_SRC),$(GAMELIB)) $(LAUNCHER_ART)
 
 # ---- the game code: generated C from the game's own NSOs (never committed)
 gen:
@@ -136,7 +138,7 @@ $(DLLS): $(EXE) tools/copy_dlls.sh
 	sh tools/copy_dlls.sh $(EXE) || { [ $$? -eq 2 ] && rm -f $(EXE) && $(MAKE) $(EXE) && sh tools/copy_dlls.sh $(EXE); }
 	touch $@
 
-# ---- the launcher (display mode and resolution, then the game): launcher/
+# ---- the launcher (display mode, resolution, controls..., then the game): launcher/
 $(B)/launcher/res.o: launcher/launcher.rc launcher/launcher.manifest $(ICON)
 	@mkdir -p $(dir $@)
 	cd launcher && windres $(if $(ICON),-DHAVE_ICON -I../$(B)/icon) launcher.rc -O coff -o ../$@
@@ -146,7 +148,13 @@ $(B)/launcher/launcher.o: launcher/launcher.c
 	$(CC) -O2 -Wall -municode -c $< -o $@
 
 $(LAUNCHER): $(B)/launcher/launcher.o $(B)/launcher/res.o
-	$(CC) -fuse-ld=lld -municode -mwindows -o $@ $^ -lcomctl32 -lshell32
+	$(CC) -fuse-ld=lld -municode -mwindows -o $@ $^ -lcomctl32 -lshell32 -lole32 -lwindowscodecs -lmsimg32 -luuid
+
+# ---- the launcher's title logo, from your game files (tools/make_launcher_art.py): build/ only, never committed or
+# shipped. The launcher reads it when it starts, if it's there; without game files (or without it) the title is text.
+$(B)/launcher_art/logo.png: extracted/romfs/00/package_data.bin tools/make_launcher_art.py
+	@mkdir -p $(dir $@)
+	$(PY) tools/make_launcher_art.py extracted $@
 
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
 

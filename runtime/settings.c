@@ -43,7 +43,6 @@ Settings g_settings = {
     .upscaler_auto = true,
     .res_auto = true,
     .render3d_auto = true,
-    .fps60 = true,  // (60 fps by default; 120 is experimental: fps120)
     .livesplit_host = "localhost:16834",
 #ifndef __APPLE__
     .bg_input = true,  // (as before the setting; on macOS it needs Input Monitoring permission, so Off there)
@@ -187,8 +186,14 @@ void settings_load(void) {
             if (!g_settings.upscaler_auto) g_settings.upscaler = !strcmp(val, "bilinear") ? UPSCALE_BILINEAR : UPSCALE_SHARP;
             else g_settings.upscaler = g_default_upscaler;
         }
-        else if (!strcmp(key, "fps60")) g_settings.fps60 = atoi(val) != 0;
-        else if (!strcmp(key, "fps120")) g_settings.fps120 = atoi(val) != 0;
+        // The frame rate: "frame_rate = 30 | 60 | 120". The fps60 / fps120 lines of v0.1.4 and before are ignored on
+        // purpose: v0.1.4 made 60 the default and wrote fps60 = 1 for everyone, and the 60 / 120 modes still change
+        // volleyball (shorter rallies, the AI missing) and menu repeats, so everyone starts at 30 again until they
+        // choose otherwise.
+        else if (!strcmp(key, "frame_rate")) {
+            int r = atoi(val);
+            g_settings.fps60 = r >= 60, g_settings.fps120 = r >= 120;
+        }
         else if (!strcmp(key, "anisotropy")) {  // (0: the game's own; else 2, 4, 8 or 16)
             int a = atoi(val);
             g_settings.anisotropy = a >= 16 ? 16 : a >= 8 ? 8 : a >= 4 ? 4 : a >= 2 ? 2 : 0;
@@ -286,8 +291,7 @@ void settings_save(void) {
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
     fprintf(f, "resolution = %s\n", g_settings.res_auto ? "auto" : res_name(g_settings.res_mode));
     fprintf(f, "render3d = %s\n", g_settings.render3d_auto ? "auto" : r3d_names[g_settings.render3d & 3]);
-    fprintf(f, "fps60 = %d\n", g_settings.fps60);
-    fprintf(f, "fps120 = %d\n", g_settings.fps120);
+    fprintf(f, "frame_rate = %d\n", g_settings.fps120 ? 120 : g_settings.fps60 ? 60 : 30);
     fprintf(f, "anisotropy = %d\n", g_settings.anisotropy);
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);

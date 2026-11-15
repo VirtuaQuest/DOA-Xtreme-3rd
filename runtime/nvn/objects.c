@@ -833,6 +833,29 @@ NVN(nvnQueueAcquireTexture) {
 // ~17 s, which the mailbox swapchain dropped (a hitch); the game runs that 0.1% slower instead.
 // The 120 fps mode (runtime/hle/game_hooks.c rt_frame_rate) paces at 120 Hz the same way (119.88 Hz displays: theirs).
 _Atomic uint64_t g_frames_presented;
+// Catch-up for the 120 fps mode (runtime/hle/game_hooks.c rt_frame_updates): the game updates to add next frame,
+// for the time the frames took beyond their period (the engine's own catch-up counts 60 Hz vsyncs, so it never fires
+// at 120). The time owed is kept from frame to frame, at most 3 periods, so a slow frame is made up for instead of
+// playing in slow motion; at most 3 extra updates a frame (the game at full speed down to 30 fps).
+_Atomic int g_catchup_updates;
+static void catchup_frame(uint64_t now, uint64_t period) {
+    static uint64_t last;
+    static int64_t owed;  // (ns of game time behind; negative: a little ahead, from pacing jitter)
+    int n = 0;
+    if (last && period) {
+        owed += (int64_t)(now - last) - (int64_t)period;
+        if (owed < -(int64_t)period) owed = -(int64_t)period;
+        if (owed > 3 * (int64_t)period) owed = 3 * (int64_t)period;
+        if (owed >= (int64_t)period) n = (int)(owed / (int64_t)period), owed -= (int64_t)n * (int64_t)period;
+    }
+    last = now;
+    atomic_store(&g_catchup_updates, n);
+    static uint64_t total, logged = 1;
+    if (n > 0 && (total += (uint64_t)n) >= logged) {
+        LOG("[nvn] 120 fps: %llu catch-up updates so far (slow frames made up for)\n", (unsigned long long)total);
+        logged *= 2;
+    }
+}
 static void present_pace(int interval) {
     atomic_fetch_add(&g_frames_presented, 1);
     static int on = -1;
@@ -842,12 +865,14 @@ static void present_pace(int interval) {
     static uint64_t next;
     extern _Atomic uint64_t g_display_period_ns;  // (device.c, metal.m: 0 unknown)
     extern int rt_frame_rate(void);
-    uint64_t vsync = atomic_load(&g_display_period_ns), base = rt_frame_rate() == 120 ? 8333333 : 16666667;
+    bool at120 = rt_frame_rate() == 120;
+    uint64_t vsync = atomic_load(&g_display_period_ns), base = at120 ? 8333333 : 16666667;
     if (vsync < base - base / 200 || vsync > base + base / 200) vsync = base;
     uint64_t period = vsync * (uint64_t)interval, now = plat_now_ns();
     if (!next || now > next + period) next = now;
     else if (next > now) plat_sleep_until_ns(next);
     next += period;
+    if (at120) catchup_frame(plat_now_ns(), vsync);
 }
 
 NVN(nvnQueuePresentTexture) {

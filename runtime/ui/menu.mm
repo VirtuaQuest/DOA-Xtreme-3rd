@@ -425,14 +425,15 @@ static void tab_display(void) {
                        "sharpest, smoothest edges.\n\nTakes effect the next time the game starts."))
             g_settings.render3d_auto = false;
     }
-    {   // fps60 / fps120 (runtime/hle/game_hooks.c rt_frame_mode)
-        static const char *rates[] = {"30 (Switch)", "60", "120 (experimental)"};
+    {   // frame_rate: fps60 / fps120 (runtime/hle/game_hooks.c rt_frame_mode)
+        static const char *rates[] = {"30 (Switch)", "60 (experimental)", "120 (experimental)"};
         int ri = !g_settings.fps60 ? 0 : g_settings.fps120 ? 2 : 1;
-        if (opt_choice("Frame rate", &ri, rates, 3, 1,
-                       "30: the Switch game's own. 60 (the default): the engine's own 60 fps mode, one game step of "
-                       "1/60 s per frame. 120, experimental: half of that step per frame (best on a 120 Hz or faster "
-                       "display); a part of the game may still run at the wrong speed there. The game plays at its "
-                       "normal speed at every rate, just more smoothly.\n\nTakes effect the next time the game starts.",
+        if (opt_choice("Frame rate", &ri, rates, 3, 0,
+                       "30 (the default): the Switch game's own, and the way it's meant to play. 60 and 120 are "
+                       "experimental: smoother, but the Volleyball AI may not work as intended there (the other "
+                       "girls miss the ball more, rallies are shorter) and holding a direction in some menus scrolls "
+                       "faster.\n\nTakes effect "
+                       "the next time the game starts.",
                        false))
             g_settings.fps60 = ri >= 1, g_settings.fps120 = ri == 2;
     }

@@ -219,8 +219,8 @@ route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
     the opening. The character select's backgrounds change every 10 s in both modes (it went with the step, too: the
     "UI timers" noted before were this).
 - **Setting:** `fps60` in larecomp.ini, Video > Rendering > "60 fps", or the launcher's "60 fps" box. It applies at
-  the next start. On by default (since 120 fps came: 60 is the default frame rate; a larecomp.ini that has
-  `fps60 = 0` keeps 30). `LARECOMP_FPS=30/60/120` overrides it (test).
+  the next start. `LARECOMP_FPS=30/60/120` overrides it (test). Experimental and off by default since v0.1.5 (see
+  "60 and 120 fps: what still differs"); the setting is `frame_rate = 60` now.
 - **Result** (RTX 3060, 1440p 3D): a locked 60 fps through the menus and a 7-minute run (186 of ~200 two-second
   windows at 60.0; dips only at loads). The game uncapped runs at 230-250 fps, worst frame 8 ms.
 - `LARECOMP_LOG_INTERVAL=1` now logs the guest call stack of each present-interval change.
@@ -241,10 +241,16 @@ route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
   - **The time step** (0x700038f690, seconds per frame, 1/60 in mode 0): 1/120 (`rt_time_step`, TIME_STEP).
   - **The game's float step** (GAME_STEP): 0.25 instead of 0.5 (`rt_game_step`).
 - **Pacing:** `present_pace` paces at 120 Hz in this mode (a display within 0.5% of 120 Hz sets the grid, as at 60).
-- **Experimental**, and labelled so everywhere: off by default (60 fps is the default).
-- **Setting:** `fps120 = 1` with `fps60 = 1` in larecomp.ini, Video > Rendering > "Frame rate", the launcher's Frame
-  rate, or RecompLauncher's. `fps60 = 0` is always 30 fps, so a launcher that only knows `fps60` still decides.
-  `LARECOMP_FPS=120` (test). `tools/route.sh` stretches its presses 4x at 120.
+- **Catch-up** (`tools/patches.py` UPDATES_FN, `rt_frame_updates`; `objects.c` catchup_frame): the game updates a
+  frame 1 + the catch-up its late-frame accumulator wants (the main update 0x7000297ec0 loops that many times, the
+  count from 0x700038f8a0). The accumulator counts 60 Hz vsyncs, so at 120 fps it never caught up and every frame
+  under 120 played in slow motion. At 120 the runtime counts it instead: the time the frames took beyond 1/120 s,
+  carried from frame to frame (at most 3 periods owed, 3 extra updates a frame). The log counts them (`[nvn] 120 fps:
+  N catch-up updates so far`). At 30 and 60 the engine's own catch-up stays.
+- **Experimental**, and labelled so everywhere: off by default (30 fps is the default since v0.1.5).
+- **Setting:** `frame_rate = 120` in larecomp.ini (since v0.1.5; v0.1.4's `fps60` / `fps120` lines are ignored),
+  Video > Rendering > "Frame rate", the launcher's Frame rate, or RecompLauncher's. `LARECOMP_FPS=120` (test).
+  `tools/route.sh` stretches its presses 4x at 120.
 - **Checked** (RTX 3060, 1440p 3D, a 144 Hz display):
   - **Speed:** screenshot series at the same game times, matched shot by shot. The select route: 120 against 30 at
     1.02. The relax route: 120 against 60 at 1.047, the same as 60 against 30 (1.047), so that 5% is the route and
@@ -254,8 +260,43 @@ route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
   - **Not reached by the test routes:** the patched divisions and tick counters (0x7000155000-0x700015f000, an
     unknown system). Their handling follows the code above, but no run has used them yet; at 120 fps the log says
     when one is used for the first time (`[game] 120 fps: logic steps per frame used ...`).
-  - **Menus:** holding a direction repeats by time (0x700063b3c0 counts down the real time since the last frame), so
-    it keeps its speed; finer frames make the repeat about 1.2x as fast as at 30 fps (the countdown overshoots less).
+  - **Menus:** the input manager's repeat is by time (0x700063b3c0: the first after 166.7 ms, then every 100 ms, by
+    the real time since the last frame), but some menus count frames themselves: see below.
+
+## 60 and 120 fps: what still differs (v0.1.5: 30 fps is the default again)
+
+v0.1.4 made 60 the default. Players then found Beach Volleyball and menus behaving differently, and so they do:
+- **Beach Volleyball:** the same scripted match from a fresh save (`tools/route.sh`-style presses at the same game
+  times, each 3 frames long; in the match A, B, Y, X in turn). At 30 fps the match went 5-7 and lasted ~145 s of game
+  time; at 60 fps 2-7 in ~60 s, at a steady 58-60 fps. Rallies end sooner and our side misses far more: part of the
+  match logic (the ball, the players' or the AI's timing) still steps per frame in the engine's 60 fps mode, which the
+  Switch game never used. Not located yet.
+- **Menus:** on the character select, the same press moves the cursor (30 / 60 / 120 fps): a 267 ms hold of the stick
+  or the d-pad 1 / 4 / 9 places, a 100 ms flick 1 / 1 / 3, a 2 s hold 19 / 39 / 79. The menu repeats after ~6 frames
+  and then every 3, counted in frames - not by the input manager (its events stay time-based at every rate, logged
+  with `LARECOMP_LOG_REPEAT=1`), and not by any steady counter the scans found (likely the UI's own script or a stored
+  frame number). Not located yet.
+- So: `frame_rate = 30` by default again, under a new key so that v0.1.4's `fps60 = 1` (written for everyone by its
+  default) doesn't keep anyone at 60; 60 and 120 stay, labelled experimental, with what differs in their help text.
+- **Tools for the hunt** (debug): `LARECOMP_COUNTER_SCAN_INT=32|16|8` (with `LARECOMP_COUNTER_SCAN`): small integers
+  stepping by +-1 a frame instead of floats; `LARECOMP_SCAN_WATCH=<step>:<min>:<max>` watches the counters it finds,
+  in the same run (heap addresses change between runs); `LARECOMP_WATCH_INPUT=<lo>,<hi>`: who reads the mapped-input
+  object; `LARECOMP_WATCH_STATE=1`: who reads the controller state copies.
+
+## Launcher: the game's look, and controller buttons
+
+- **Look:** a sky-blue header with the game's cover art and title logo, over a blue-to-cyan body, white labels, a
+  pink Play button. Nothing of the game's is built into the launcher: at start it loads
+  `extracted/control/icon_AmericanEnglish.dat` (the cover) and `build/launcher_art/logo.png`, which `make` cuts from
+  the title screen's layout in your own game files (`tools/make_launcher_art.py`, texture `doax3_logo_ps4`). Without
+  them the title is text. Loaded with WIC, drawn with AlphaBlend.
+- **Controller buttons:** "Customize..." next to Controls opens a panel with each game button and the controller
+  button it's on (named for Xbox / PlayStation / Switch), and two presets: Switch layout (the original) and Swapped
+  (A and B, X and Y). Picking a button another input uses swaps the two. It writes `bind_pad_*` lines only for
+  buttons off their default (runtime/hle/bindings.c). Keyboard keys stay in the game's menu (F1).
+- **Frame rate warning:** a line under Frame rate says what the choice does, in orange for 60 and 120
+  ("Experimental: the Volleyball AI may not work as intended, and some menus scroll faster"). It follows the
+  pointer over the open list, and resting the pointer on the box shows the full explanation as a tooltip.
 
 ## Texture filtering (anisotropic)
 

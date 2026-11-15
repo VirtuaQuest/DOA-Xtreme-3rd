@@ -83,14 +83,14 @@
       "defaults": { "render3d": "auto" }
     },
     {
-      "id": "fps60", "label": "Frame rate",
-      "help": "60 (the default) draws twice as many frames as the console's 30. 120 draws four times as many and is experimental: a part of the game may still run at the wrong speed there; it's best on a 120 Hz or faster display. The game keeps its normal speed at 30 and 60.",
+      "id": "frame_rate", "label": "Frame rate",
+      "help": "30 (the default) is the console's own, and the way the game is meant to play. 60 and 120 are experimental: smoother, but the Volleyball AI may not work as intended there (the other girls miss the ball more, rallies are shorter) and holding a direction in some menus scrolls faster.",
       "choices": [
-        { "label": "30 (as on the console)", "set": { "fps60": "0", "fps120": "0" } },
-        { "label": "60", "set": { "fps60": "1", "fps120": "0" } },
-        { "label": "120 (experimental)", "set": { "fps60": "1", "fps120": "1" } }
+        { "label": "30 (as on the console)", "set": { "frame_rate": "30" } },
+        { "label": "60 (experimental)", "set": { "frame_rate": "60" } },
+        { "label": "120 (experimental)", "set": { "frame_rate": "120" } }
       ],
-      "defaults": { "fps60": "1", "fps120": "0" }
+      "defaults": { "frame_rate": "30" }
     },
     {
       "id": "antialias", "label": "Anti-aliasing",

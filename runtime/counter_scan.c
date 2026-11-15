@@ -62,6 +62,20 @@ static uint64_t total_pages(void) {
     return n;
 }
 
+static int scan_int_size(void) {  // bytes, from LARECOMP_COUNTER_SCAN_INT=<bits>: 32 (or anything else), 16, 8
+    const char *e = getenv("LARECOMP_COUNTER_SCAN_INT");
+    int bits = e ? atoi(e) : 32;
+    return bits == 16 ? 2 : bits == 8 ? 1 : 4;
+}
+
+static int32_t int_at(const uint8_t *p, int size) {
+    if (size == 1) return (int8_t)p[0];
+    if (size == 2) { int16_t v; memcpy(&v, p, 2); return v; }
+    int32_t v;
+    memcpy(&v, p, 4);
+    return v;
+}
+
 static int by_step(const void *a, const void *b) {
     float x = ((const Cand *)a)->step, y = ((const Cand *)b)->step;
     return x < y ? -1 : x > y;
@@ -127,6 +141,21 @@ void counter_scan_frame(uint64_t frame) {
                 g_copy_addr[g_ncopy++] = a;
             }
         LOG("[scan] frame %llu: %zu pages changed\n", (unsigned long long)frame, g_ncopy);
+    } else if (stage == 2 && getenv("LARECOMP_COUNTER_SCAN_INT")) {
+        // LARECOMP_COUNTER_SCAN_INT=32|16|8: small int32 / int16 / int8 counters stepping by +-1 a frame instead
+        // (frame-counted timers: menu repeat delays, countdowns), |value| < 4096
+        int isz = scan_int_size();
+        size_t cap = 0;
+        for (size_t i = 0; i < g_ncopy; i++) {
+            const uint8_t *o = g_copy + i * PAGE;
+            for (int k = 0; k < (int)PAGE; k += isz) {
+                int32_t a = int_at(o + k, isz), b = int_at((const uint8_t *)(uintptr_t)(g_copy_addr[i] + k), isz), d = b - a;
+                if ((d != 1 && d != -1) || b > 4095 || b < -4095) continue;
+                if (g_ncand == cap) g_cand = realloc(g_cand, (cap = cap ? cap * 2 : 65536) * sizeof *g_cand);
+                g_cand[g_ncand++] = (Cand){g_copy_addr[i] + k, (float)b, (float)d};
+            }
+        }
+        LOG("[scan] frame %llu: %zu ints changed by 1\n", (unsigned long long)frame, g_ncand);
     } else if (stage == 2) {
         size_t cap = 0;
         for (size_t i = 0; i < g_ncopy; i++) {
@@ -142,8 +171,11 @@ void counter_scan_frame(uint64_t frame) {
         LOG("[scan] frame %llu: %zu floats changed\n", (unsigned long long)frame, g_ncand);
     } else {
         size_t keep = 0;
+        bool ints = getenv("LARECOMP_COUNTER_SCAN_INT") != NULL;
         for (size_t i = 0; i < g_ncand; i++) {
-            float b = *(const float *)(uintptr_t)g_cand[i].addr, d = b - g_cand[i].last;
+            float b = ints ? (float)int_at((const uint8_t *)(uintptr_t)g_cand[i].addr, scan_int_size())
+                           : *(const float *)(uintptr_t)g_cand[i].addr;
+            float d = b - g_cand[i].last;
             if (fabsf(d - g_cand[i].step) <= 1e-5f * fmaxf(1.0f, fabsf(b))) g_cand[keep++] = g_cand[i];
         }
         qsort(g_cand, keep, sizeof *g_cand, by_step);
@@ -151,14 +183,38 @@ void counter_scan_frame(uint64_t frame) {
         for (size_t i = 0; i < keep;) {
             size_t j = i;
             while (j < keep && fabsf(g_cand[j].step - g_cand[i].step) <= 1e-6f * fmaxf(1.0f, fabsf(g_cand[i].step))) j++;
-            char addrs[400] = "";
-            for (size_t k = i; k < j && k < i + 8; k++) {
+            char addrs[3000] = "";
+            for (size_t k = i; k < j && k < i + (ints ? 64 : 8); k++) {
                 char t[48];
-                snprintf(t, sizeof t, " %llx=%g", (unsigned long long)g_cand[k].addr, *(const float *)(uintptr_t)g_cand[k].addr);
+                if (ints) snprintf(t, sizeof t, " %llx=%d", (unsigned long long)g_cand[k].addr,
+                                   int_at((const uint8_t *)(uintptr_t)g_cand[k].addr, scan_int_size()));
+                else snprintf(t, sizeof t, " %llx=%g", (unsigned long long)g_cand[k].addr, *(const float *)(uintptr_t)g_cand[k].addr);
                 strncat(addrs, t, sizeof addrs - strlen(addrs) - 1);
             }
             LOG("[scan]   step %.7g: %zu%s\n", g_cand[i].step, j - i, addrs);
             i = j;
+        }
+        // LARECOMP_SCAN_WATCH=<step>:<min>:<max> (with the int scan): watch who touches the heap counters found with
+        // that step and a value in [min, max], in this same run (heap addresses change from run to run): the first
+        // one's page, from the first to the last of them on it - runtime/dispatch.c's "[watch] +off by <fn>" lines
+        const char *sw = getenv("LARECOMP_SCAN_WATCH");
+        int wstep = -1, wmin = 1, wmax = 32;
+        if (ints && sw && sscanf(sw, "%d:%d:%d", &wstep, &wmin, &wmax) >= 1) {
+            extern uint64_t g_watch_lo, g_watch_hi;
+            uint64_t page = 0, lo = 0, hi = 0;
+            for (size_t i = 0; i < keep; i++) {
+                int v = int_at((const uint8_t *)(uintptr_t)g_cand[i].addr, scan_int_size());
+                if (g_cand[i].addr < HEAP_BASE || (int)g_cand[i].step != wstep || v < wmin || v > wmax) continue;
+                if (!page) page = g_cand[i].addr & ~(PAGE - 1), lo = hi = g_cand[i].addr;
+                if ((g_cand[i].addr & ~(PAGE - 1)) != page) continue;
+                if (g_cand[i].addr < lo) lo = g_cand[i].addr;
+                if (g_cand[i].addr > hi) hi = g_cand[i].addr;
+                LOG("[scan] watch candidate %llx = %d\n", (unsigned long long)g_cand[i].addr, v);
+            }
+            if (page) {
+                g_watch_lo = lo, g_watch_hi = hi + (uint64_t)scan_int_size();
+                LOG("[scan] watching %llx..%llx\n", (unsigned long long)g_watch_lo, (unsigned long long)g_watch_hi);
+            }
         }
         free(g_hash), free(g_copy), free(g_copy_addr), free(g_cand);
         g_hash = NULL, g_copy = NULL, g_copy_addr = NULL, g_cand = NULL, g_ncopy = g_ncand = 0;

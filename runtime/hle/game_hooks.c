@@ -64,6 +64,15 @@ uint32_t rt_frame_mode(uint32_t orig) {
 // own (its present interval: 60 Hz vsyncs).
 int rt_frame_rate(void) { return g_frame_120 ? 120 : 60; }
 
+// The game updates this frame (tools/patches.py UPDATES_FN): the mode's base (1) plus the engine's catch-up after a
+// slow frame. At 120 fps the engine's catch-up (in 60 Hz vsyncs) never fires, so the runtime's is used instead
+// (runtime/nvn/objects.c catchup_frame: the time the frames took beyond 1/120 s).
+uint32_t rt_frame_updates(uint32_t base, uint32_t engine_extra) {
+    if (!g_frame_120) return base + engine_extra;
+    extern _Atomic int g_catchup_updates;  // (set once a frame, at the present: the same for each call this frame)
+    return base + (uint32_t)atomic_load(&g_catchup_updates);
+}
+
 // Frames presented so far (runtime/nvn/objects.c): which half of a 60 fps frame this is.
 extern _Atomic uint64_t g_frames_presented;
 

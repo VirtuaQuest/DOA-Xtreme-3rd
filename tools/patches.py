@@ -141,6 +141,29 @@ TIME_STEP = (
 )
 
 
+# The game updates per frame (1.0.6 0x700038f8a0): the mode's base (1) plus the catch-up updates the engine's
+# late-frame accumulator wants after a slow frame (the main update 0x7000297ec0 loops that many times). The engine
+# measures lateness in 60 Hz vsyncs, so at 120 fps it never catches up and a slow frame plays in slow motion; there
+# the runtime counts the catch-up itself from the real frame times (rt_frame_updates).
+UPDATES_FN = (
+    0xB9401509,                # ldr  w9, [x8, #0x14]       (the engine's catch-up updates)
+    0xB9400D08,                # ldr  w8, [x8, #0xc]        (the mode)
+    0x321E07EA,                # mov  w10, #0xc
+    (0x9000000B, 0x9F00001F),  # adrp x11, <page>
+    (0x9100016B, 0xFFC003FF),  # add  x11, x11, #<mode table>
+    0x9B0A2D08,                # madd x8, x8, x10, x11
+    0xB9400508,                # ldr  w8, [x8, #4]          (the mode's base)
+    0x0B090100,                # add  w0, w8, w9
+    0xD65F03C0,                # ret
+)
+
+
+def updates_add(module, a):
+    return ('{ extern uint32_t rt_frame_updates(uint32_t, uint32_t); '
+            'c->x[0] = rt_frame_updates((uint32_t)c->x[8], (uint32_t)c->x[9]); }'
+            f'  /* {a:#x}: the game updates this frame (tools/patches.py) */')
+
+
 def steps_float(d):
     def emit(module, a):
         return ('{ extern float rt_steps_float(uint32_t); '
@@ -252,4 +275,6 @@ def find(module):
     print('game: logic steps per frame used as ' + ', '.join(f'{v} {k}' for k, v in kinds.items()), file=sys.stderr)
     i = find_one(module.words, TIME_STEP, 'time step')
     patches[module.lo + (i + 5) * 4] = time_step_load
+    i = find_one(module.words, UPDATES_FN, 'updates per frame')
+    patches[module.lo + (i + 7) * 4] = updates_add
     return patches

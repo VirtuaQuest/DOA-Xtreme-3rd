@@ -669,7 +669,32 @@ void input_frame(uint64_t frame) {
         }
     }
     extern void watch_arm(void);
+    {   // LARECOMP_WATCH_INPUT=<lo>,<hi> (debug, hex offsets; 1.0.6): who reads the game's mapped-input object (its
+        // pointer at 0x7000a898f8: +0x60 repeated, +0x64 held, +0x68 per-button repeat timers, +0xe8 pressed)
+        extern uint64_t g_watch_lo, g_watch_hi;
+        const char *e = getenv("LARECOMP_WATCH_INPUT");
+        uint64_t obj = e && !g_watch_lo ? *(volatile uint64_t *)(uintptr_t)0x7000a898f8ull : 0;
+        unsigned lo = 0x60, hi = 0xf0;
+        if (obj && sscanf(e, "%x,%x", &lo, &hi) >= 1) {
+            g_watch_lo = obj + lo, g_watch_hi = obj + hi;
+            LOG("[input] watching the mapped-input object %llx +%#x..+%#x\n", (unsigned long long)obj, lo, hi);
+        }
+    }
     watch_arm();
+    if (getenv("LARECOMP_LOG_REPEAT")) {  // (debug, 1.0.6) the input manager's held / pressed-or-repeated masks
+        uint64_t m = *(volatile uint64_t *)(uintptr_t)0x7000a898f8ull;
+        static uint32_t last_held, last_ev;
+        uint32_t held = m ? *(volatile uint32_t *)(uintptr_t)(m + 0x64) : 0, ev = m ? *(volatile uint32_t *)(uintptr_t)(m + 0xe8) : 0;
+        if (held != last_held || ev || last_ev) LOG("[input] frame %llu held %#x events %#x\n", (unsigned long long)frame, held, ev);
+        last_held = held, last_ev = ev;
+    }
+    if (getenv("LARECOMP_LOG_REPEAT") && frame % 30 == 0) {  // (debug, 1.0.6) the menu repeat's delay, interval, last time
+        uint64_t d = *(volatile uint64_t *)(uintptr_t)0x7000a898e0ull, r = *(volatile uint64_t *)(uintptr_t)0x7000a898e8ull;
+        uint64_t l = *(volatile uint64_t *)(uintptr_t)0x7000a89908ull;
+        if (d && r && l)
+            LOG("[input] repeat delay %lld interval %lld, last time %lld\n", (long long)*(int64_t *)(uintptr_t)d,
+                (long long)*(int64_t *)(uintptr_t)r, (long long)*(int64_t *)(uintptr_t)l);
+    }
     host_test_frame(frame);
     const char *spec = getenv("LARECOMP_INPUT");
     if (!spec) return;
@@ -731,6 +756,10 @@ static void fill_state(Cpu *c) {
     if (id != 0) return;  // docked: only player 1 (FullKey); Handheld stays disconnected
     extern uint64_t g_watch_lo, g_watch_hi;
     if (id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
+    if (id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_STATE")) {  // (debug) who reads the state copies: the game
+        g_watch_lo = c->x[0] - 0x28, g_watch_hi = c->x[0] + 0x28;     // keeps the last one 0x28 below this one
+        LOG("[input] watching the controller states %llx..%llx\n", (unsigned long long)g_watch_lo, (unsigned long long)g_watch_hi);
+    }
     if (id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {
         unsigned lo = 0x98 + 0x10, hi = 0x98 + 0x48;  // offsets from the controller manager
         sscanf(getenv("LARECOMP_WATCH_PAD"), "%x,%x", &lo, &hi);
