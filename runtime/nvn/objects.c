@@ -852,7 +852,7 @@ static void catchup_frame(uint64_t now, uint64_t period) {
     atomic_store(&g_catchup_updates, n);
     static uint64_t total, logged = 1;
     if (n > 0 && (total += (uint64_t)n) >= logged) {
-        LOG("[nvn] 120 fps: %llu catch-up updates so far (slow frames made up for)\n", (unsigned long long)total);
+        LOG("[nvn] %llu catch-up updates so far (slow frames made up for)\n", (unsigned long long)total);
         logged *= 2;
     }
 }
@@ -872,7 +872,10 @@ static void present_pace(int interval) {
     if (!next || now > next + period) next = now;
     else if (next > now) plat_sleep_until_ns(next);
     next += period;
-    if (at120) catchup_frame(plat_now_ns(), vsync);
+    extern bool rt_frame_fast(void);
+    if (rt_frame_fast() && interval == 1) catchup_frame(plat_now_ns(), vsync);
+    extern void rt_logic_tick(uint64_t now, uint64_t period);
+    rt_logic_tick(plat_now_ns(), vsync);  // (60 / 120 fps: the logic updates at 30 Hz, where they're used)
 }
 
 NVN(nvnQueuePresentTexture) {

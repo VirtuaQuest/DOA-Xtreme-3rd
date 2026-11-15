@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "hle.h"
 #include "platform.h"
@@ -61,13 +62,21 @@ static int cmp(const void *x, const void *y) {
 }
 
 static long from = -2, to;
+static long windows[16][2];  // LARECOMP_FNPROF=<from>:<to>[,<from>:<to>...]: several windows, each its own file
+static int nwin, win;
 static void fnprof_dump(void);
 
 void fnprof_frame(uint64_t frame) {
     if (from == -2) {
         from = -1;
         const char *e = getenv("LARECOMP_FNPROF");
-        if (e && sscanf(e, "%ld:%ld", &from, &to) != 2) from = -1;
+        for (const char *p = e; p && *p && nwin < 16;) {
+            if (sscanf(p, "%ld:%ld", &windows[nwin][0], &windows[nwin][1]) != 2) break;
+            nwin++;
+            p = strchr(p, ',');
+            if (p) p++;
+        }
+        if (nwin) from = windows[0][0], to = windows[0][1];
     }
     if (from < 0) return;
     if ((long)frame == from) { g_fnprof = 1; LOG("[fnprof] on at frame %llu\n", (unsigned long long)frame); }
@@ -86,13 +95,18 @@ static void fnprof_dump(void) {
     for (int i = 0; i < NSLOT; i++)
         if (slots[i].addr) { rows[n][0] = slots[i].addr; rows[n][1] = slots[i].count; n++; }
     qsort(rows, n, sizeof rows[0], cmp);
-    const char *out = getenv("LARECOMP_FNPROF_OUT") ? getenv("LARECOMP_FNPROF_OUT") : "build/fnprof.txt";  // (parallel runs)
+    const char *base = getenv("LARECOMP_FNPROF_OUT") ? getenv("LARECOMP_FNPROF_OUT") : "build/fnprof.txt";  // (parallel runs)
+    char out[512];
+    if (nwin > 1) snprintf(out, sizeof out, "%s.%ld", base, from);  // (several windows: build/fnprof.txt.<from>)
+    else snprintf(out, sizeof out, "%s", base);
     FILE *f = fopen(out, "w");
     for (int i = 0; f && i < n; i++) fprintf(f, "%llx %llu\n", (unsigned long long)rows[i][0], (unsigned long long)rows[i][1]);
     if (f) fclose(f);
     free(rows);
     LOG("[fnprof] %d functions, written %s (frames %ld-%ld)\n", n, out, from, to);
-    from = -1;
+    memset(slots, 0, sizeof slots);
+    if (++win < nwin) from = windows[win][0], to = windows[win][1];
+    else from = -1;
 }
 
 // LARECOMP_FNPROF=0:<to>: profile from process start (threads the game starts before the first frame)

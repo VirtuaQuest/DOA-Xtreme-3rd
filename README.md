@@ -17,8 +17,9 @@ with sound, the opening movie, optional 60 and 120 fps modes, a selectable 3D re
 
 ## What you need
 
-- **A Windows PC:** Windows 10 or 11, 64-bit; a CPU with AVX2 (Intel 4th generation / AMD Ryzen or newer); a GPU with
-  Vulkan drivers; about 20 GB of free disk space; an internet connection for the one-time tool download.
+- **A Windows PC:** Windows 10 or 11, 64-bit; a 64-bit CPU from 2008 or newer (SSE4.2; with AVX2, Intel 4th
+  generation / AMD Ryzen or newer, it runs about 10% faster: the game is built for the CPU of the PC it's set up on);
+  a GPU with Vulkan drivers; about 20 GB of free disk space; an internet connection for the one-time tool download.
 - **Your game, as `.nsp` files dumped from your own console:**
   - **Base game:** required. Alone, it's the *Basic Free Edition*, as on the console.
   - **The 1.0.6 update:** optional, recommended.

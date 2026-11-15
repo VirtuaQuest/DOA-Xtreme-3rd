@@ -673,14 +673,19 @@ void input_frame(uint64_t frame) {
         // pointer at 0x7000a898f8: +0x60 repeated, +0x64 held, +0x68 per-button repeat timers, +0xe8 pressed)
         extern uint64_t g_watch_lo, g_watch_hi;
         const char *e = getenv("LARECOMP_WATCH_INPUT");
-        uint64_t obj = e && !g_watch_lo ? *(volatile uint64_t *)(uintptr_t)0x7000a898f8ull : 0;
+        const char *from = getenv("LARECOMP_WATCH_FROM");  // (from that frame on: a scene, not the whole boot)
+        uint64_t obj = e && !g_watch_lo && (!from || frame >= strtoull(from, NULL, 0))
+                           ? *(volatile uint64_t *)(uintptr_t)0x7000a898f8ull : 0;
         unsigned lo = 0x60, hi = 0xf0;
         if (obj && sscanf(e, "%x,%x", &lo, &hi) >= 1) {
             g_watch_lo = obj + lo, g_watch_hi = obj + hi;
             LOG("[input] watching the mapped-input object %llx +%#x..+%#x\n", (unsigned long long)obj, lo, hi);
         }
     }
-    watch_arm();
+    {
+        const char *from = getenv("LARECOMP_WATCH_FROM");  // (LARECOMP_WATCH_ADDR too: armed from that frame on)
+        if (!from || frame >= strtoull(from, NULL, 0)) watch_arm();
+    }
     if (getenv("LARECOMP_LOG_REPEAT")) {  // (debug, 1.0.6) the input manager's held / pressed-or-repeated masks
         uint64_t m = *(volatile uint64_t *)(uintptr_t)0x7000a898f8ull;
         static uint32_t last_held, last_ev;

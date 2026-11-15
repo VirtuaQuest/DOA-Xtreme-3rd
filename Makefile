@@ -11,11 +11,19 @@ IMGUI    := third_party/imgui
 PY       := .venv/Scripts/python.exe
 
 OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX
-GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h)
+# The game code's CPU level, for the PC it's built on (the player's own, in Setup): x86-64-v3 (AVX2, FMA, BMI2: Intel
+# Haswell / 2013, AMD Excavator / Zen and newer) where the CPU has them, else x86-64-v2 (SSE4.2, 2008 on): the same
+# game, its fused multiply-adds done in software (slower). make GENLEVEL=v2 / v3 picks one; the runtime's start-up
+# check (runtime/platform/windows.c require_cpu) asks for what was built.
+ifeq ($(origin GENLEVEL),undefined)
+GENLEVEL := $(if $(filter 3,$(shell $(CC) -march=native -dM -E -x c /dev/null 2>/dev/null | grep -cE '__(AVX2|FMA|BMI2)__')),v3,v2)
+endif
+GENARCH  ?= -march=x86-64-$(GENLEVEL)
 GENOPT   ?= -O1               # the game code's optimization (make B=build_o2 GENOPT=-O2: a second build to compare)
 GENFLAGS := $(GENOPT) -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime \
             -D_FILE_OFFSET_BITS=64 $(GENARCH)
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(OSFLAGS)
+$(B)/rt/platform/windows.o: RTFLAGS += -DGAME_CPU_V3=$(if $(filter v3,$(GENLEVEL)),1,0)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(OSFLAGS)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lws2_32 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared \

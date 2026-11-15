@@ -263,25 +263,55 @@ route's timing; `LARECOMP_NO_USER_INPUT=1` keeps a run strictly scripted.
   - **Menus:** the input manager's repeat is by time (0x700063b3c0: the first after 166.7 ms, then every 100 ms, by
     the real time since the last frame), but some menus count frames themselves: see below.
 
-## 60 and 120 fps: what still differs (v0.1.5: 30 fps is the default again)
+## 60 and 120 fps: what still differed (v0.1.5), and the fix (v0.1.6)
 
-v0.1.4 made 60 the default. Players then found Beach Volleyball and menus behaving differently, and so they do:
-- **Beach Volleyball:** the same scripted match from a fresh save (`tools/route.sh`-style presses at the same game
-  times, each 3 frames long; in the match A, B, Y, X in turn). At 30 fps the match went 5-7 and lasted ~145 s of game
-  time; at 60 fps 2-7 in ~60 s, at a steady 58-60 fps. Rallies end sooner and our side misses far more: part of the
-  match logic (the ball, the players' or the AI's timing) still steps per frame in the engine's 60 fps mode, which the
-  Switch game never used. Not located yet.
-- **Menus:** on the character select, the same press moves the cursor (30 / 60 / 120 fps): a 267 ms hold of the stick
-  or the d-pad 1 / 4 / 9 places, a 100 ms flick 1 / 1 / 3, a 2 s hold 19 / 39 / 79. The menu repeats after ~6 frames
-  and then every 3, counted in frames - not by the input manager (its events stay time-based at every rate, logged
-  with `LARECOMP_LOG_REPEAT=1`), and not by any steady counter the scans found (likely the UI's own script or a stored
-  frame number). Not located yet.
-- So: `frame_rate = 30` by default again, under a new key so that v0.1.4's `fps60 = 1` (written for everyone by its
-  default) doesn't keep anyone at 60; 60 and 120 stay, labelled experimental, with what differs in their help text.
-- **Tools for the hunt** (debug): `LARECOMP_COUNTER_SCAN_INT=32|16|8` (with `LARECOMP_COUNTER_SCAN`): small integers
-  stepping by +-1 a frame instead of floats; `LARECOMP_SCAN_WATCH=<step>:<min>:<max>` watches the counters it finds,
-  in the same run (heap addresses change between runs); `LARECOMP_WATCH_INPUT=<lo>,<hi>`: who reads the mapped-input
-  object; `LARECOMP_WATCH_STATE=1`: who reads the controller state copies.
+v0.1.4 made 60 the default. Players then found Beach Volleyball and menus behaving differently. v0.1.5 went back to
+30 by default (`frame_rate`, a new key, so v0.1.4's `fps60 = 1` doesn't keep anyone at 60) and labelled 60 and 120
+experimental. What differed, and why:
+- **Beach Volleyball:** a match from a fresh save, the menus at 30 fps and the match from frame 7250 at the rate
+  tested (`LARECOMP_FPS_FROM`, below), in the match A, B, Y, X in turn every 0.5 s: at 30 fps ~120 s with rallies,
+  replays and cut-ins; at 60 fps over in 40-50 s, our side scoring 0-1 points, no replays.
+- **Menus:** on the character select, a 267 ms hold of the stick moved the cursor 1 / 4 / 9 places at 30 / 60 / 120
+  fps, a 2 s hold 19 / 39 / 79.
+- **The cause: the fibers.** The game's scripts, the menus, the match's states and the girls' AI run as fibers
+  (`Fiber::RunAll`, 1.0.6 0x700066c250, 27 slots; names from the decompilation project's notes), which wait in 30 fps
+  frames (`Fiber::WaitFrames(n)`, 0x700066c5c0: n logic updates) and count their own iterations (menu key repeat:
+  "after 10 frames, every 3"). The 60 fps mode made every update half a Switch one, so the fibers ran twice as fast.
+  Found by bisecting the logic update's four calls at 30 Hz (`LARECOMP_SUB30`): only the fiber scheduler's mattered.
+- **The fix** (`tools/patches.py` FIBER_RUN, `rt_fiber_waiting` / `rt_fiber_begin` / `rt_fiber_end`): under 60 / 120 fps
+  every fiber but the camera's (0x13) is counted down and run at the Switch's 30 Hz - on one frame in 2 / 4 (more
+  after a slow frame, `rt_logic_tick`), in the 30 fps frame mode with the 30 fps step. The camera fiber, the girls'
+  movement, animation and physics, the ball and the effects keep the display's rate: consecutive frames at 60 fps all
+  differ in the match (with the whole logic at 30 Hz, every second frame was the same). The match at 60 fps: ~92 s, at
+  120: ~100 s, rallies, replays and cut-ins as at 30. The character select: 1 / 1 / 19 places at 30, 60 and 120.
+- **Press edges** (`PAD_CLEAR`): a button's "just pressed" is there for one update; the fibers at 30 Hz get every edge
+  since they last ran (otherwise a tap on the character select did nothing at 60 fps half the time).
+- **Button histories** (`HISTORY_TICK`, `rt_history_tick`): the controls' history of button states (0x7000235fb0,
+  0x70002219e0) counts frames per state, read as "pressed k frames ago": counted in 30 fps frames at every rate.
+- **A 60 Hz system at 120 fps** (`TICKS60`, `rt_ticks60`): a system stepped in 60 Hz ticks once a frame (0x7000000e80)
+  ran 120 ticks a second at 120 fps; one tick every other frame there now.
+- **Slowdown at 60 fps:** the engine's own catch-up after a slow frame is off at 60 (its late-frame vsyncs broke the
+  pacing, `FRAME_EXTRA`), so a frame over 16.7 ms played in slow motion. The runtime's catch-up (`catchup_frame`, as
+  at 120) now runs at 60 too: extra logic updates for the time the frames took beyond their period.
+- **Tools** (debug): `LARECOMP_FPS_FROM=<frame>` (with `LARECOMP_FPS=60/120`): 30 fps until that frame, then the rate
+  tested - a route through the menus the same at every rate. `LARECOMP_FIBERS30=<mask>`: which fibers run at 30 Hz
+  (bit = fiber id; 0: none, the v0.1.5 behaviour). `LARECOMP_SUB30=<mask>`: any of the logic update's four calls at
+  30 Hz. `LARECOMP_LOGIC30=1`: the whole logic at 30 Hz (only the per-frame part at the display's rate).
+  `LARECOMP_TASK30`, `LARECOMP_LOG_TASKS`: the task list's tasks. `LARECOMP_FNPROF=a:b,c:d`: several windows, one file
+  each. `LARECOMP_WATCH_FROM=<frame>`: arm `LARECOMP_WATCH_ADDR` / `LARECOMP_WATCH_INPUT` from that frame. Earlier:
+  `LARECOMP_COUNTER_SCAN_INT`, `LARECOMP_SCAN_WATCH`, `LARECOMP_WATCH_STATE`.
+
+## Older CPUs: the game code built for the CPU it's set up on (v0.1.6)
+
+- **Before:** the game code was always built for x86-64-v3 (AVX2, FMA, BMI2: Intel Haswell / 2013, AMD Excavator /
+  Zen and newer); on an older CPU the game only said it needed AVX2.
+- **Now** (`Makefile` GENLEVEL): the build asks the compiler what the CPU of the PC it runs on has (`-march=native`):
+  x86-64-v3 where it has AVX2, FMA and BMI2, else x86-64-v2 (SSE4.2, 2008 on). The same game; on v2 the fused
+  multiply-adds of the lifted code are done in software. Setup builds on the player's PC, so it fits that PC. The
+  start-up check (`runtime/platform/windows.c` require_cpu, `GAME_CPU_V3`) asks for what was built. `make GENLEVEL=v2`
+  picks one.
+- **Checked:** a v2 build (`make B=build_v2 GENLEVEL=v2`) on this PC: the select route uncapped (no pacing) at
+  ~440 fps against ~490 for v3 (10% slower), otherwise the same.
 
 ## Launcher: the game's look, and controller buttons
 
