@@ -8,6 +8,8 @@
   extract PATTERN [--out DIR]             game files matching PATTERN (* ? wildcards) to DIR/<path>, unpacked
   copy SRC DST MOD                        put game file SRC into mod MOD as DST (e.g. another girl's face)
   swap-look TARGET SOURCE MOD [--parts]   TARGET's face / hair / body skin replaced by SOURCE's, in mod MOD
+  body MOD                                writes mods/MOD/body.ini to fill in (the launcher's Mods tab sets it too)
+                                          and says how big each girl's breasts are, for bust_size
   voice-unpack GIRL DIR                   GIRL's voice lines to DIR/000.wav ... (and DIR/lines.txt)
   voice-pack GIRL DIR MOD                 GIRL's voice bank with every DIR/NNN.<audio> as line NNN, into mod MOD
   reactions-unpack GIRL DIR               GIRL's short voice sounds (shouts, laughs: the .xws banks) to WAVs
@@ -25,6 +27,7 @@ Mods live in mods/<MOD>/romfs/<game path>; the runtime loads every mods/* folder
 """
 import argparse
 import fnmatch
+import math
 import os
 import re
 import struct
@@ -157,6 +160,83 @@ def cmd_copy(a):
     if a.dst not in game.files:
         raise SystemExit(f'{a.dst} is not a game file (a mod can only replace the game\'s own files)')
     write_mod_file(a.mod, a.dst, game.read(a.src))
+
+
+# ------------------------------------------------------------------ body shape (mods/<MOD>/body.ini)
+BODY_INI = '''# Body settings, read by the game when it starts (docs/MODDING.md, "Body shape"); the launcher's Mods tab sets
+# them too. One section per girl, by her code (doaxmod.py girls). Delete a line (or the file) to have her as she was.
+#
+# [MOM]
+# bust_size = 0.8            how far her breasts stand out, 1 as they are (width and height change half as much).
+#                            0.3 to 2.5
+# bust_jiggle = 1.2          how much they move, on top of their size (bigger moves more on its own). 0 to 2
+# bust_physics = MAR         how her breasts move: another girl's settings for the same swimsuit (Marie Rose's move
+#                            least)
+# bust_physics_amount = 0.5  part of the way there: 0 her own, 1 the other girl's (the default)
+# bust_weight = 1.5          how heavy her breasts are: heavier hang lower toward the ground, however she stands or
+#                            bends; lighter sit higher. 0.5 to 3
+# bust_contact = 1           how firmly her breasts meet each other with a bigger or heavier bust: 0 they pass
+#                            through each other, 1 they push each other apart (the default). 0 to 1
+# butt_size = 1.1            the same for her bottom (0.5 to 2.5), and butt_jiggle (0 to 2)
+# thigh_size = 1.1           thickness (0.7 to 2), and thigh_jiggle (0 to 2)
+# arm_size = 0.9             thickness: arm_size, calf_size (0.7 to 2), waist_size (0.7 to 1.8)
+'''
+
+
+def read_body_ini(mod):
+    """{girl code: {setting: value}} from mods/<mod>/body.ini."""
+    p = os.path.join(MODS, mod, 'body.ini')
+    out, cur = {}, None
+    if not os.path.exists(p):
+        return out
+    for line in open(p, encoding='utf-8'):
+        line = re.split('[#;]', line, maxsplit=1)[0].strip()
+        if not line:
+            continue
+        if line.startswith('['):
+            cur = out.setdefault(girl_code(line.strip('[]').strip()), {})
+        elif '=' in line and cur is not None:
+            k, v = (x.strip() for x in line.split('=', 1))
+            cur[k] = v
+    return out
+
+
+def breast_depth(game, costume_tmc):
+    """How far a costume model's breasts stand out (m): the soft-body points' mean distance from their base."""
+    import tmc
+    m = tmc.Model(game.read(costume_tmc), b'')
+    out = []
+    for side in ('Left', 'Right'):
+        base = m.node_names.index(f'OPT_Breast_{side}_base')
+        pts = [i for i, n in enumerate(m.node_names) if re.fullmatch(rf'OPT_ywrk_{side}\d+', n)]
+        c = m.world[base][12:15]
+        out.append(sum(math.dist(m.world[i][12:15], c) for i in pts) / len(pts))
+    return sum(out) / 2
+
+
+def cmd_body(a):
+    """Writes mods/<MOD>/body.ini to fill in, the first time, and says how big each girl's breasts are next to
+    Kasumi's body, for bust_size. The game applies the file itself when it starts (bust_physics: runtime/mods.c
+    blends the costumes' soft-body presets with the other girl's); the launcher's Mods tab sets it too."""
+    game = Game()
+    ini = os.path.join(MODS, a.mod, 'body.ini')
+    if not os.path.exists(ini):
+        os.makedirs(os.path.dirname(ini), exist_ok=True)
+        open(ini, 'w', encoding='utf-8').write(BODY_INI)
+        print(f'wrote {ini}: set what you want there; the game reads it when it starts')
+    for t, st in read_body_ini(a.mod).items():
+        print(f'{t} ({GIRLS[t]}): ' + ', '.join(f'{k} {v}' for k, v in st.items()))
+    # (the sizes, measured on Momiji's default swimsuit design as each girl wears it)
+    design = 'MOM_bi_05_a'
+    sizes = {}
+    for g in ('KAS', 'MAR', 'HON'):
+        p = f'character/{g}/costume/{design}/{g}_{design.upper()}_TMC.tmc'
+        p = next((q for q in game.files if q.endswith(p)), None)
+        if p:
+            sizes[g] = breast_depth(game, p)
+    if 'KAS' in sizes:
+        print('breast sizes (bust_size for a girl on Kasumi\'s body, which all but Marie Rose and Honoka wear): '
+              + ', '.join(f'{GIRLS[g]} {v / sizes["KAS"]:.2f}' for g, v in sizes.items()))
 
 
 def cmd_swap_look(a):
@@ -631,6 +711,9 @@ def cmd_model_import(a):
                 if v != '*':  # (* keeps it: some aren't floats)
                     struct.pack_into('<f', new_tmc, at + 4 * k, float(v))
         new_tmc = bytes(new_tmc)
+    if getattr(a, 'as_target', None):  # (--as: the result goes in another model's place, e.g. another hairstyle's slot)
+        tmc_p, tmcl_p = model_paths(game, a.as_target)
+        print(f'  written as {tmc_p}')
     write_mod_file(a.mod, tmc_p, new_tmc)
     write_mod_file(a.mod, tmcl_p, new_tmcl)
 
@@ -699,6 +782,7 @@ def main():
     p.set_defaults(fn=cmd_extract)
     p = sub.add_parser('copy'); p.add_argument('src'); p.add_argument('dst'); p.add_argument('mod')
     p.set_defaults(fn=cmd_copy)
+    p = sub.add_parser('body'); p.add_argument('mod'); p.set_defaults(fn=cmd_body)
     p = sub.add_parser('swap-look'); p.add_argument('target'); p.add_argument('source'); p.add_argument('mod')
     p.add_argument('--parts', default='face,hair,body', help='any of face,hair,body (default: all three)')
     p.set_defaults(fn=cmd_swap_look)
@@ -743,6 +827,9 @@ def main():
     p.add_argument('--copy-weights', action='store_true',
                    help='every mesh takes its bone weights from the nearest original vertex (else only those without '
                         'weights or with other bones)')
+    p.add_argument('--as', dest='as_target', metavar='TARGET',
+                   help="the result written as this model instead (its path, as for target): a hairstyle built on "
+                        "another style's bones and physics, worn in this style's place")
     p.set_defaults(fn=cmd_model_import)
     p = sub.add_parser('tmc-info'); p.add_argument('file'); p.set_defaults(fn=cmd_tmc_info)
     p = sub.add_parser('skeleton'); p.add_argument('target'); p.add_argument('--objects', action='store_true')

@@ -474,25 +474,195 @@ static void edges_gather(uint64_t frame) {
     for (int i = 0; i < 3; i++) g_edges[i] |= *(volatile uint32_t *)(uintptr_t)(g_pad + 0x48 + 4 * i);
 }
 
-uint32_t rt_fiber_waiting(uint32_t slot, uint32_t state, uint64_t pad_got) {
+static void motion_pass(Cpu *c, const uint64_t *fns, const uint64_t *wins, int nwins);
+
+// flags: the slot's (low two bits: 1 waiting; bit 2: started, not run yet). Gives back the state, 1 if it runs now.
+// A fiber that was just started (Fiber::Start) runs on the next update as on the Switch, whichever update that is:
+// the code that started it may look for its first results right away (the vacation's mode ended at once when its
+// fiber hadn't set the first page yet: at 120 fps "Travel to New Zack Island" went back to the title).
+uint32_t rt_fiber_waiting(Cpu *c, uint32_t slot, uint32_t flags, uint64_t pad_got, const uint64_t *motion_fns,
+                          const uint64_t *motion_wins, int motion_nwins) {
+    uint32_t state = flags & 3;
     if (state != 1 || !g_frame_60 || g_in_logic) return state;
     extern _Atomic uint64_t g_frames_presented;
     uint64_t frame = atomic_load(&g_frames_presented) + 1;
     g_pad_got = pad_got;
     edges_gather(frame);
     if (!fiber30(slot)) return state;
+    if (flags & 4) {
+        static uint64_t logged;
+        if ((++logged & (logged - 1)) == 0)
+            LOG("[game] a fiber's first run on the next update (fiber %#x; %llu so far)\n", slot, (unsigned long long)logged);
+        return 1;
+    }
     static uint64_t frame_of[27];
     static int used[27];
     if (frame_of[slot] != frame) frame_of[slot] = frame, used[slot] = 0;
-    if (used[slot] >= atomic_load(&g_logic_updates)) return 0;  // (not this update: no count down, no run)
+    if (used[slot] >= atomic_load(&g_logic_updates)) {  // (not this update: no count down, no run)
+        if (slot == 0x11) motion_pass(c, motion_fns, motion_wins, motion_nwins);
+        return 0;
+    }
     used[slot]++;
     return 1;
 }
 
+// ---- the girls' motion in between the 30 Hz ticks (tools/patches.py MOTION_*). The motion player (fiber 0x11) runs
+// at 30 Hz with the other fibers, as on the Switch; on the updates in between, motion_pass draws the girls part of a
+// tick on: it saves the motion player's data (the windows: what its code's GOT entries point to, 8 KB each), runs the
+// motion of each girl the last tick advanced for that part of a tick (SlotMotion::UpdateSlot without the calls that
+// reach past that data: script commands, starting or changing a motion, its end, the face's), moves her by her root's
+// step (ApplyRootMotion), builds the bones and updates the characters' models with the display's step
+// (FUN_7000003b60), then puts every changed byte of the data back. The models (on the heap) keep that pose; the next
+// tick starts from exactly what the last one left. The tick's own characters update gets the display's step too
+// (rt_motion_anim_step), so the face and other animation layers keep their speed.
+// LARECOMP_MOTION_INTERP=0: the girls at 30 fps again (the motion player's ticks only).
+static int g_motion_interp_env = -1;
+static uint8_t g_motion_marks[4];  // (this tick: the girl's motion advanced)
+static int g_motion_passes;        // (in-between frames since the last tick)
+static bool g_in_motion_pass;
+static uint64_t g_paused_ptr, g_replay_ptr;  // (Game::g_paused, the volleyball match state: from the tick's registers)
+
+static bool motion_interp(void) {
+    if (g_motion_interp_env < 0) {
+        const char *e = getenv("LARECOMP_MOTION_INTERP");
+        g_motion_interp_env = !e || atoi(e) != 0;
+        LOG("[game] the girls' motion in between the 30 Hz ticks: %s\n", g_motion_interp_env ? "on" : "off");
+    }
+    return g_motion_interp_env && g_frame_60 && fiber30(0x11);
+}
+
+void rt_motion_mark(uint32_t slot) {
+    if (slot < 4 && !g_in_motion_pass) g_motion_marks[slot] = 1;
+}
+
+int rt_motion_in_pass(void) { return g_in_motion_pass; }
+
+// The step a motion tick hands the characters' update (bits: the game step, 0 while paused): the display's, a half /
+// quarter of it, with the in-between frames adding the rest.
+uint32_t rt_motion_anim_step(Cpu *c, uint32_t bits) {
+    g_paused_ptr = c->x[23], g_replay_ptr = c->x[21];
+    if (!g_in_logic || g_in_motion_pass || !motion_interp()) return bits;
+    float f;
+    memcpy(&f, &bits, 4);
+    f *= g_frame_120 ? 0.25f : 0.5f;
+    memcpy(&bits, &f, 4);
+    return bits;
+}
+
+// The volleyball's ball moves at 30 Hz too (Volleyball::Ball::Step, in the girls' fiber 8), and the rally camera
+// aims at it (Camera::UpdateVolleyballMode, every frame): the ball and the camera's aim stepped at 30 Hz among girls
+// moving at 60 (at 60 fps its position 5.3161, 5.3171, 5.3171, 5.3177, 5.3177 ...). In between, its record is carried
+// on by its last tick's step (the position it keeps from before the tick: +0xc) and its spin by the spin speed, for
+// the camera and the drawing; the next tick starts from what the last one left (ball_restore, before any fiber at
+// 30 Hz runs). Not in the replay, and not across a jump (a new serve). LARECOMP_MOTION_INTERP=0 turns it off too.
+static uint64_t g_ball;  // (the record carried on: put back before the next tick)
+static float g_ball_pos[3];
+static int32_t g_ball_spin[3];
+
+static void ball_restore(void) {
+    if (!g_ball) return;
+    memcpy((void *)(uintptr_t)g_ball, g_ball_pos, sizeof g_ball_pos);
+    memcpy((void *)(uintptr_t)(g_ball + 0x60), g_ball_spin, sizeof g_ball_spin);
+    g_ball = 0;
+}
+
+static void ball_carry(uint64_t got, float f) {
+    uint64_t b = got ? *(volatile uint64_t *)(uintptr_t)got : 0;
+    if (!b) return;
+    ball_restore();  // (from the tick's place, however many frames in)
+    float *pos = (float *)(uintptr_t)b;
+    const float *prev = pos + 3;
+    int32_t *spin = (int32_t *)(uintptr_t)(b + 0x60);
+    const int32_t *speed = (const int32_t *)(uintptr_t)(b + 0x6c);
+    float d[3], d2 = 0;
+    for (int k = 0; k < 3; k++) d[k] = pos[k] - prev[k], d2 += d[k] * d[k];
+    if (d2 == 0 || d2 > 0.8f * 0.8f) return;  // (still, or a jump: as it is)
+    g_ball = b;
+    memcpy(g_ball_pos, pos, sizeof g_ball_pos);
+    memcpy(g_ball_spin, spin, sizeof g_ball_spin);
+    for (int k = 0; k < 3; k++) pos[k] += d[k] * f, spin[k] += (int32_t)lroundf((float)speed[k] * f);
+}
+
+static void motion_pass(Cpu *c, const uint64_t *fns, const uint64_t *wins, int nwins) {
+    if (!motion_interp() || !g_step_ptr || !g_records || !g_paused_ptr) return;
+    if (*(volatile uint8_t *)(uintptr_t)g_paused_ptr) return;  // (paused: nothing moves; the tick's step is 0 too)
+    enum { UPDATE, ROOT, BONES, CHARS, BALL };
+    int n = g_frame_120 ? 4 : 2, j = ++g_motion_passes;
+    if (j > n - 1) j = n - 1;  // (a slow frame: no further than the next tick)
+    float part = g_step_game * (float)j / (float)n, display = g_step_game / (float)n;
+    bool replay = g_replay_ptr && *(volatile uint8_t *)(uintptr_t)g_replay_ptr == 5;  // (the replay: the ticks only)
+    bool any = false;
+    for (int s = 0; s < 4; s++) any |= g_motion_marks[s] != 0;
+    any &= !replay;
+    static uint8_t *save;  // (the data as the tick left it, then as the motion part of this frame left it)
+    static size_t save_size;
+    size_t total = 0;
+    for (int w = 0; w < nwins; w++) total += wins[2 * w + 1] - wins[2 * w];
+    if (any && save_size < 2 * total) {
+        free(save);
+        save = malloc(2 * total);
+        save_size = save ? 2 * total : 0;
+        if (!save) return;
+    }
+    static Cpu saved;
+    memcpy(&saved, c, sizeof saved);
+    // (as in the tick: the 30 fps mode, the game step, in the logic)
+    uint32_t step_bits, idx = *(volatile uint32_t *)(uintptr_t)(g_records + 4);
+    memcpy(&step_bits, g_step_ptr, 4);
+    uint32_t *mode = (uint32_t *)(uintptr_t)(g_records + (uint64_t)(idx & 3) * 16 + 0xc), mode_was = *mode;
+    *mode = 1;
+    g_in_logic = true, g_in_motion_pass = true;
+    if (any) {
+        for (int w = 0, o = 0; w < nwins; o += (int)(wins[2 * w + 1] - wins[2 * w]), w++)
+            memcpy(save + o, (const void *)(uintptr_t)wins[2 * w], wins[2 * w + 1] - wins[2 * w]);
+        memcpy(g_step_ptr, &part, 4);
+        for (int s = 0; s < 4; s++)
+            if (g_motion_marks[s]) c->x[0] = (uint64_t)s, guest_call(c, fns[UPDATE]);
+        for (int s = 0; s < 4; s++)
+            if (g_motion_marks[s]) c->x[0] = (uint64_t)s, guest_call(c, fns[ROOT]);
+        memcpy(g_step_ptr, &g_step_game, 4);
+        for (int s = 0; s < 4; s++) c->x[0] = (uint64_t)s, guest_call(c, fns[BONES]);
+        for (int w = 0, o = 0; w < nwins; o += (int)(wins[2 * w + 1] - wins[2 * w]), w++)
+            memcpy(save + total + o, (const void *)(uintptr_t)wins[2 * w], wins[2 * w + 1] - wins[2 * w]);
+    }
+    memcpy(g_step_ptr, &g_step_game, 4);
+    uint32_t d;
+    memcpy(&d, &display, 4);
+    c->v[0] = d;
+    guest_call(c, fns[CHARS]);
+    uint64_t restored = 0;
+    // (what the motion part changed goes back as the tick left it, 8 bytes at a time; what the characters' update
+    // changed after it stays, as that update runs every frame with the display's step)
+    if (any)
+        for (int w = 0, o = 0; w < nwins; o += (int)(wins[2 * w + 1] - wins[2 * w]), w++) {
+            uint64_t *live = (uint64_t *)(uintptr_t)wins[2 * w];
+            const uint64_t *was = (const uint64_t *)(save + o), *mid = (const uint64_t *)(save + total + o);
+            for (size_t k = 0; k < (wins[2 * w + 1] - wins[2 * w]) / 8; k++)
+                if (mid[k] != was[k] && live[k] == mid[k]) live[k] = was[k], restored++;
+        }
+    memcpy(g_step_ptr, &step_bits, 4);
+    *mode = mode_was;
+    g_in_logic = false, g_in_motion_pass = false;
+    memcpy(c, &saved, sizeof saved);
+    if (!replay) ball_carry(fns[BALL], (float)j / (float)n);
+    static uint64_t passes, with_girls, words, logged = 64;
+    passes++;
+    if (any) with_girls++, words += restored;
+    if (passes >= logged) {
+        LOG("[game] girls' motion in between: %llu frames, %llu with girls moving (%llu words of their data put back "
+            "each, on average)\n", (unsigned long long)passes, (unsigned long long)with_girls,
+            (unsigned long long)(with_girls ? words / with_girls : 0));
+        logged = logged < 4096 ? logged * 4 : logged + 4096;
+    }
+}
+
 static uint32_t g_fiber_step_bits, g_fiber_mode_was;
 static uint32_t *g_fiber_mode;
+void rt_body_probe(void);
 int rt_fiber_begin(uint32_t slot) {
+    if (slot == 0x11) memset(g_motion_marks, 0, sizeof g_motion_marks), g_motion_passes = 0, rt_body_probe();  // (a motion tick)
     if (!g_frame_60 || g_in_logic || !g_step_ptr || !g_records || !fiber30(slot)) return 0;
+    ball_restore();  // (a tick: the ball as the last one left it)
     memcpy(&g_fiber_step_bits, g_step_ptr, 4);
     *g_step_ptr = g_step_game;
     uint32_t idx = *(volatile uint32_t *)(uintptr_t)(g_records + 4);

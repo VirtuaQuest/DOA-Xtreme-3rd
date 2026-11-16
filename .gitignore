@@ -8,6 +8,7 @@ save/
 save.route-backup/
 cache/
 larecomp.ini
+/body.ini
 __pycache__/
 extracted.*/
 generated.*/

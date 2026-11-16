@@ -48,11 +48,13 @@ Dump any model's bones yourself:
 | Hair | `character/<GIRL>/hair/hair_NN/<GIRL>_HAIR_NN_TMC.tmc` | the hair meshes; its own copy of the head bone; the hair's bone chains and their physics |
 | Body skin texture | `character/<GIRL>/bodybase/<GIRL>_BODYBASE_TEXCH.texch` | the skin colour the costumes' body mesh uses |
 | Animation | `character/<GIRL>/animation/<GIRL>_INGAME_MPM.mpm`, `_INGAME_SKTM.sktm`, `_FACE_MPM.mpm`, `_FACE_RIG_MPM.mpm` | her body motions and facial animation (plus a bank shared by all girls) |
-| Data | `<GIRL>_DAT.bin`, `<GIRL>_MISC.misc`, `<GIRL>_YWRK_PHYD.phyd` | per-girl data; the soft body's presets (*inferred*) |
+| Costume physics | `character/<GIRL>/costume/.../<GIRL>_<OWNER>_..._YWRK.ywrk` | how her breasts, hips and thighs move in that costume ([soft parts](#soft-parts-of-the-body)) |
+| Data | `<GIRL>_DAT.bin`, `<GIRL>_MISC.misc`, `<GIRL>_YWRK_PHYD.phyd` | per-girl data; the body's collision bones |
 
-- **Every costume exists once per girl who can wear it.** `KAS_AYA_BI_02_A` is Ayane's bikini fitted to Kasumi's
-  body, with Kasumi's skeleton. The body you see is the costume model's `WGT_body` mesh, so a new body shape means a
-  new `WGT_body` in every costume she can wear.
+- **Costume models exist for Kasumi, Marie Rose and Honoka.** `KAS_AYA_BI_02_A` is Ayane's bikini fitted to Kasumi's
+  body, with Kasumi's skeleton. The other eight girls wear Kasumi's models (with their own skin texture and costume
+  physics). The body you see is the costume model's `WGT_body` mesh, so a new body shape means a new `WGT_body` in
+  every costume she can wear.
 
 ## Bone names
 
@@ -216,7 +218,19 @@ MOT01_Head ─ WGT_hair (the hair's meshes)
   - **The swing values** are 0.6 at the root and 0.1 down Momiji's ponytail, and 1.0 at the root then 0 along
     `hair_03`'s chains.
 - **Colliders** (the shapes the hair stays outside of: head, neck, shoulders) are in the hair's own `ACSCLS`,
-  attached to the hair model's copies of the body bones. They are sized for the original girl.
+  attached to the hair model's copies of the body bones. They are sized for the original girl. Momiji's ponytail
+  style has none; her long `hair_03` one, an ellipsoid round the head.
+- **Which colliders a chain meets** (*code*): every collider of the same character, the costume's included (the
+  body's 12: hips, waist, chest, neck, shoulders, upper arms, thighs, breasts; none on the head or forearms), the 16
+  nearest at most. A chain group's sub-blocks 2 and 3 can list collider ids to leave out or to keep; the girls' hair
+  doesn't use them.
+- **A chain group's settings:** +0x94 (u16) substeps per step: 10 on long hair, 1 on Momiji's short ponytail; +0x96
+  (u16) how many nodes from the root follow the animation. Long hair (Kasumi's, Momiji's `hair_03`) has the group
+  block +0x40..+0x8f about 0.5, 0, 0.5-0.77, 0.43-0.51, 0.04-0.05 (each four times); the ponytail 0.93, 1, 0.7, 0.2,
+  0.12.
+- **Long, wide hair needs many chains:** only the chain bones collide, and the hair between them can pass through the
+  body. A new waist-long hair on the ponytail's 3 chains sank through her back as she turned; on `hair_03`'s 15
+  (three layers of five, across the back of the head) it stays out.
 - **Rest pose** (*code*): the simulation starts from the model's bind pose (each node's `HieLay` local). Moving a
   chain's bones in the model moves where the hair rests and how long its links are; `ACSCLS` doesn't keep its own copy.
 - **Fitting new hair to a style's chains:** weight the new hair to the style's existing chains, moving the chain
@@ -227,9 +241,24 @@ MOT01_Head ─ WGT_hair (the hair's meshes)
 
 - **Bones:** breasts (`OPT_Breast_*_base` with 18 `OPT_ywrk_` points each), hips (14 each) and thighs (6 each).
   `ywrk` is short for *yawaraka*, soft.
-- **The game finds them by name** (*code*, `Character::InitSoftBody`), with up to 12 presets from the girl's files,
-  probably `<GIRL>_YWRK_PHYD.phyd` (*inferred*). Costumes also have `_YWRK.ywrk` files; no reader for those was found.
+- **The game finds them by name** (*code*, `Character::InitSoftBody`): `OPT_ywrk_Left00` / `Right00` (breasts),
+  `OPT_ywrk_hip_*`, `OPT_ywrk_leg_*`; each region's points are numbered by the last two characters of their names.
+- **How they move comes from the costume** (*code*): the costume's `_YWRK.ywrk` (a `tdpack`: count at +0x18, offsets
+  from +0x30) holds 12 presets of 0x340 bytes: breasts left and right, hips, thighs, then the same six in a second
+  variant. Each girl has her own file for each costume, tuned for her: in the same swimsuit Marie Rose's breast points
+  move far less (several at 0) than Kasumi's, Momiji's or Honoka's. A built-in per-character table multiplies the
+  values by a softness level; at the default level it changes nothing. `<GIRL>_YWRK_PHYD.phyd` is something else:
+  the body's collision bones (hips, chest, arms, legs).
+- **Most girls wear Kasumi's body** (*checked*): only Kasumi, Marie Rose and Honoka have costume models of their own.
+  The other eight girls' packages hold their face, hair, skin and costume physics; their costumes are Kasumi's models.
+  Measured from the breast points, Marie Rose's breasts are 0.63 the size of Kasumi's, Honoka's 1.06.
+- **The girls' character ids** (the slot record's +0x4; 0 is the owner) are 2-12 in package order: Kasumi 2, Marie Rose
+  3, Honoka 4, Ayane 5, Nyotengu 6, Kokoro 7, Hitomi 8, Momiji 9, Helena 10, Misaki 11, Leifang 12 (checked in game for
+  Kokoro, Hitomi and Momiji by their hair models).
 - **For a new body:** keep these bones and their names. Weight the soft areas to them as the original body is.
+- **Changing the breasts without a new body** ([MODDING.md](MODDING.md#body-shape-bust-butt-thighs-arms-calves-waist-and-jiggle)): scaling a
+  breast bone's inverse bind matrix (`BnOfsMtx`) about the breast's base scales what it carries in every pose, with
+  the physics, and blends at the edge by the vertices' weights; the runtime does this per girl in memory.
 
 ## Animation
 

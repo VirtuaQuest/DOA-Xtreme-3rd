@@ -14,6 +14,7 @@ mod puts the original back.
 | New **voice lines** (391 for Kasumi; each girl has her own count) | **Works** (checked in game) | `voice-unpack` / `voice-pack` |
 | New **short voice sounds** (shouts, laughs, reactions) | **Works** (checked in game; keep these banks at or below the original size) | `reactions-unpack` / `reactions-pack` |
 | Give a girl another girl's face, hair and skin | **Works** (checked in game) | `swap-look` |
+| A girl's **figure**: bust, butt, thighs, arms, calves, waist, and how much her soft parts move | **Works** (checked in game) | The launcher's Mods tab, or `body.ini` ([recipe](#body-shape-bust-butt-thighs-arms-calves-waist-and-jiggle)) |
 | Replace any other game file | **Works** | Put the file in `mods/<mod>/romfs/<game path>` |
 | New subtitles | **Not yet**: the voice text table's format isn't decoded | |
 | New costume bodies, new materials or extra submeshes | **Not yet**: the importer reuses a model's existing submeshes and materials | |
@@ -56,6 +57,7 @@ Run it from the repo root with the project's Python:
 | `voice-unpack GIRL DIR` / `voice-pack GIRL DIR MOD` | Her voice lines as WAVs / back from your recordings |
 | `reactions-unpack GIRL DIR` / `reactions-pack GIRL DIR MOD` | Her short voice sounds |
 | `swap-look TARGET SOURCE MOD` | TARGET gets SOURCE's face, hairstyles and body skin |
+| `body MOD` | Writes `mods/MOD/body.ini` to fill in, and prints each girl's breast size next to Kasumi's ([below](#body-shape-bust-butt-thighs-arms-calves-waist-and-jiggle)) |
 | `copy SRC DST MOD` | Put game file SRC into the mod in place of game file DST |
 | `tmc-info FILE\|PATH` | The chunk tree of a model (for format work) |
 | `skeleton PATH [--objects] [--json OUT]` | A model's bones: tree, bind-pose positions, which bones each mesh is skinned to ([CHARACTER_MODELS.md](CHARACTER_MODELS.md)) |
@@ -332,6 +334,79 @@ Then build the mod:
 
 The subtitles stay the original's.
 
+## Body shape: bust, butt, thighs, arms, calves, waist and jiggle
+
+Eight of the eleven girls wear Kasumi's body, so most have the same figure. A girl's shape and how her soft parts move
+can be changed without new models.
+
+**In the launcher:** the Mods tab. Pick the girl and move the sliders:
+
+| Slider | `body.ini` | What it does | Range |
+|---|---|---|---|
+| Bust size | `bust_size` | How far her breasts stand out; their width and height change half as much | 0.30 to 2.50 |
+| Bust jiggle | `bust_jiggle` | How lively they are (a bigger bust swings further on its own) | 0 to 200 % |
+| Size like | | Sets Bust size to another girl's (on Kasumi's body, Marie Rose is 0.63 and Honoka 1.06) | |
+| Bust physics | `bust_physics` | How they move: another girl's settings for the same swimsuit (Marie Rose's move least) | a girl, or `none` |
+| How much like hers | `bust_physics_amount` | Part of the way: 0 her own, 1 the other girl's | 0 to 100 % |
+| Butt size, Butt jiggle | `butt_size`, `butt_jiggle` | The same for her bottom | 0.50 to 2.50, 0 to 200 % |
+| Thighs, Thigh jiggle | `thigh_size`, `thigh_jiggle` | Thickness, and how lively the thighs' soft part is | 0.70 to 2.00, 0 to 200 % |
+| Arms, Calves, Waist | `arm_size`, `calf_size`, `waist_size` | Thickness (calves: below the knee) | 0.70 to 2.00 (waist 1.80) |
+| Bust weight | `bust_weight` | How heavy her breasts are: heavier ones hang lower along gravity, however she stands or bends; lighter ones sit higher | 50 to 300 % |
+| Breasts meet | `bust_contact` | With a bigger or heavier bust, the two breasts push each other apart where they meet, instead of passing through each other (0 %: as before) | 0 to 100 % |
+
+These settings are the girl's, whatever mods are on: Save (or Play) writes them in `body.ini` beside `larecomp.ini`,
+which the game reads after every mod's, so they win. The character select screen shows the girls without them; every
+scene after it has them. **As she is** puts her back as the game has her, over a mod's settings too.
+The tab also turns mods on or off (**On**; an off mod's folder name starts with `_`) and says what each one changes.
+
+**In a mod:** `mods/<mod>/body.ini`, one section per girl, the same settings, for a mod that brings its own figure.
+`doaxmod.py body MyMod` writes one with the settings explained and prints each girl's breast size next to Kasumi's.
+
+```ini
+[MOM]                      ; Momiji (doaxmod.py girls lists the codes)
+bust_size = 0.8            ; 1 as she is
+bust_physics = MAR         ; her breasts move like Marie Rose's
+bust_physics_amount = 0.7  ; 0 her own physics, 1 Marie Rose's (the default)
+butt_size = 1.1
+arm_size = 0.9
+```
+
+The game applies these when it starts, so there is nothing to build. When two mods that are on set the same girl,
+the later one by name wins for each setting both set, and the launcher's `body.ini` wins over all of them
+(`bust_physics = none` there gives her own physics back).
+
+- **Sizes** change the bones' bind matrices in her costume model's memory: every costume, every pose, with the
+  physics. The swimsuit follows the new shape and the edges blend in. The game's files and the other girls stay as they
+  are, even those wearing the same costume.
+  - Bust and butt grow or shrink out from their base. Arms, thighs, calves and the waist get thicker or thinner across
+    the bone, never longer: a bone's length is the skeleton's, which the animations move.
+  - The soft body grows with the part: its points move out to the new surface, and its own lengths (how far each point
+    may swing, and each point's size; the costume's `_YWRK.ywrk` presets) scale with the size. A bigger bust swings as
+    the normal one does, in proportion.
+  - The colliders that her hair meets follow the shape. A bigger bust gets a collider on each breast, sized from where
+    its soft-body points now are (many costumes have none, and the hair would only meet the chest's); the chest's reaches
+    further forward too (and the hips' further back with a bigger butt), and the arms', thighs' and waist's follow
+    their thickness.
+  - **Bust weight** pulls the breasts toward the ground every frame, after the game's own physics: each soft-body
+    point down along gravity by how far out it is (the tip most). Standing, they hang lower; bending over, they hang
+    down from her; lying back, they settle toward her chest. The jiggle goes on as before on top of it.
+  - **Breasts meet** (on with a bigger or heavier bust): every frame, after the physics, when the two breasts have
+    swung toward each other (sideways) by more than 5 mm, both are pushed back apart, half each, their inner sides
+    most, so they press together instead of going through each other. Swaying together, the same way, they move
+    freely. The log says how often: `[body] bust contact: they moved toward each other up to 4.5 cm; pushed apart in
+    370 of 600 updates`.
+- **Jiggle** scales how lively each soft-body point is, as the game's own softness levels do (level 8 is about x1.5).
+  Points the game keeps nearly still stay still.
+- **`bust_physics`** gives her the other girl's breast physics for each costume: the game's own tuning for that girl,
+  from the costume's presets, blended when the game starts (`runtime/mods.c`). Costumes the other girl doesn't have keep
+  her own physics; her hips' and thighs' stay hers.
+- **Limits:** the arms follow their animations, made for the normal bust: one that crosses in front of the chest can
+  still meet a much bigger bust. What makes the breasts give way to the arms isn't found yet.
+- **To undo:** "As she is" in the Mods tab, or delete the lines (or the `body.ini`).
+- The log lists what was applied: `[body] KAS: bust_size 1.40, arm_size 1.20: her bones changed` and
+  `[body] KAS: 608 costumes' soft-body presets: movement bust x2.10, butt x1.25, thighs x1.15`.
+  `LARECOMP_BODY_INI=<file>` reads that file instead of the launcher's `body.ini` (for test runs).
+
 ## What a girl is made of
 
 How the parts are rigged and fit together (the skeleton, the face rig, how the face and hair follow the body, physics,
@@ -345,7 +420,7 @@ animation, and a checklist for another character): [CHARACTER_MODELS.md](CHARACT
 | Hairstyles | `00/character/KAS/hair/hair_NN/KAS_HAIR_NN_TMC.tmc` + `_TMCL.tmcl` | same |
 | Body skin texture | `00/character/KAS/bodybase/KAS_BODYBASE_TEXCH.texch` + `_TEXCHL.texchl` | not yet |
 | Costumes | `<package>/character/KAS/costume/<design>_<kind>_<n>_<variant>/` (TMC, TMCL, YWRK physics) | textures: `model-import --textures` |
-| Animation, physics, data | `00/character/KAS/animation/*`, `KAS_DAT.bin`, `KAS_YWRK_PHYD.phyd` | (keep the girl's) |
+| Animation, data | `00/character/KAS/animation/*`, `KAS_DAT.bin`, `KAS_YWRK_PHYD.phyd` (collision bones) | (keep the girl's) |
 | Voice | `00/sound/char/SND_CHAR_KAS_JP_XHS.xhs`, `..._XWS.xws`, `..._CASINO_JP_XWS.xws` | `voice-*`, `reactions-*` |
 | Portraits, profile, icons | KSLT texture packs in `00/ui/` | `portraits-*` |
 | Subtitles | `00/voice_msg/VOICE_MSG_TABEL_KAS.bin` | not decoded |

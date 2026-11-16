@@ -146,7 +146,7 @@ $(DLLS): $(EXE) tools/copy_dlls.sh
 	sh tools/copy_dlls.sh $(EXE) || { [ $$? -eq 2 ] && rm -f $(EXE) && $(MAKE) $(EXE) && sh tools/copy_dlls.sh $(EXE); }
 	touch $@
 
-# ---- the launcher (display mode, resolution, controls..., then the game): launcher/
+# ---- the launcher (its Game, Controls and Mods tabs, then the game): launcher/
 $(B)/launcher/res.o: launcher/launcher.rc launcher/launcher.manifest $(ICON)
 	@mkdir -p $(dir $@)
 	cd launcher && windres $(if $(ICON),-DHAVE_ICON -I../$(B)/icon) launcher.rc -O coff -o ../$@

@@ -313,6 +313,199 @@ experimental. What differed, and why:
 - **Checked:** a v2 build (`make B=build_v2 GENLEVEL=v2`) on this PC: the select route uncapped (no pacing) at
   ~440 fps against ~490 for v3 (10% slower), otherwise the same.
 
+## 60 / 120 fps: smooth girls, 120 fps past the menu, texture filtering specks (after v0.1.6)
+
+- **120 fps stopped at the main menu.** "Travel to New Zack Island" went back to the title. The vacation's mode ends
+  when its page is unset (0xff), and the vacation's fiber (3) sets the first page on its first run; at 30 Hz under
+  120 fps that first run could wait up to 3 updates, so the mode saw the old 0xff and ended. A fiber that was just
+  started (`Fiber::Start`: slot flags bit 2 until its first `WaitFrames`) now runs on the next update whatever the
+  30 Hz rhythm, as on the Switch (`rt_fiber_waiting`, which gets the slot's whole flags now). At 60 fps it only worked
+  because the updates happened to line up.
+- **The girls moved at 30 fps under 60 / 120 fps.** Their motion player (`SlotMotion::FiberMain`, fiber 0x11)
+  advances the motions, runs their scripts, builds the bones and updates the characters' models; at 30 Hz with the
+  other fibers (v0.1.6) all of that happened on every other / fourth frame. It stays at 30 Hz (its ticks raise
+  one-tick flags and pulses the volleyball AI reads, count timers, record replays); on the updates in between, the
+  runtime draws the girls part of a tick on (`motion_pass`, `tools/patches.py` MOTION_*):
+  - it saves the motion player's data (what its functions' GOT entries point to, found when the code is generated:
+    16 windows, 169 KB on 1.0.6);
+  - runs `SlotMotion::UpdateSlot` for each girl the last tick advanced, with that part of a tick as the step, without
+    the calls that reach past that data (script commands, starting, changing or ending a motion, the face's motion:
+    made at the ticks only), moves her by her root's step (`ApplyRootMotion`), builds the bones and updates the
+    characters (`FUN_7000003b60`) with the display's step;
+  - then puts back every byte the motion part changed (what the characters' update changed stays: it runs every
+    frame now, the tick's with the display's step too, so face and other animation layers keep their speed).
+  The next tick starts from exactly what the last one left. Checked: consecutive frames of a close-up changed every
+  frame instead of every other (8.9 / 0.1 / 8.8 -> 5.3 / 6.3 / 5.0, mean difference); a volleyball match at 60 fps
+  1-1 after ~85 s, as at 30. `LARECOMP_MOTION_INTERP=0` turns it off.
+- **Anisotropic filtering put blocky yellow-green specks** on the girls' hair and swimsuits. It was raised on every
+  mipmapped filtered sampler, including two the game holds to one level (lod 0..0), through which it reads its own
+  buffers. Those (and nearest-minified ones) are left alone now (`vk_sampler`). Found by bisecting the samplers by
+  their min filter (`LARECOMP_ANISO_ONLY=<filter>`, test).
+- `doaxmod model-import --as TARGET`: the result written as another model (a hairstyle built on another style's
+  bones and physics, worn in this style's place).
+- **The volleyball's ball moved at 30 Hz** under 60 / 120 fps. `Volleyball::Ball::Step` runs in the girls' fiber
+  (8, at 30 Hz), and the rally camera aims at the ball every frame. So the ball, and the camera's aim, stepped on
+  every other frame while the girls moved on every frame (a logged rally at 60 fps: the ball's z 5.3161, 5.3171,
+  5.3171, 5.3177, 5.3177 ...; the girls and the camera's eye changed on every frame).
+  - On the frames in between, the ball record is carried on by its last tick's step (it keeps the position from
+    before the tick, +0xc) and its spin by its spin speed.
+  - It is put back before any 30 Hz fiber runs, so the next tick starts from what the last one left (`ball_carry`,
+    `tools/patches.py` BALL_STEP).
+  - Not during the replay, and not across a jump (a new serve).
+  - Checked: the ball's z then changed on every frame (5.3077, 5.3064, 5.3049, 5.3035 ...). The held ball stays in the
+    server's hands.
+  - `LARECOMP_MOTION_INTERP=0` turns it off with the girls' in-between motion.
+- **Checked and left alone:** the girls' positions on the in-between frames. A first reading of the log suggested
+  `ApplyRootMotion` overshot there. It didn't: the log had the position from before each tick, not after it. Read
+  correctly, every frame is evenly spaced.
+- **Test route note:** at 60 fps the `volleyball` route's presses don't always start the serve after a game ends;
+  this happens the same way with `LARECOMP_MOTION_INTERP=0`.
+
+## Body settings: a girl's bust size and breast physics (`runtime/hle/body_shape.c`, `runtime/mods.c`)
+
+- **What a `body.ini` can set per girl** (a mod's, or the launcher's beside `larecomp.ini`, read last so it wins;
+  the game applies them when it starts):
+  - `bust_size`.
+  - `bust_physics` (another girl's), with `bust_physics_amount`.
+  - [MODDING.md](MODDING.md#body-shape-bust-butt-thighs-arms-calves-waist-and-jiggle) has the recipe.
+- **Size:** `Character::Create` gets her files (`tools/patches.py` CHAR_FILES_COPIED / CHAR_FILES_COLLECTED: the
+  resources at x21, her character id in w22). Before her character is built, `rt_body_files` multiplies her costume
+  model's breast bones' inverse bind matrices (`OPT_Breast_*_base` and the 18 `OPT_ywrk_*` points per side) by a scale
+  about each breast's base:
+  - the full amount along the breast's direction, half across it;
+  - the breast colliders on the bases shrink with them;
+  - only in that model's memory, once per load (the changed matrices are remembered, so a character built again from
+    the same files isn't scaled twice).
+- **Checked in game:** Momiji at 0.6, in the beach close-up and the shower. The swimsuit follows the new shape, and the
+  size stayed the same through the scenes that rebuild her.
+- **Physics:** when the first RomFS image is laid out, `body_physics` (`runtime/mods.c`) lists the costume presets
+  (`<pkg>/character/<girl>/costume/<design>/..._YWRK.ywrk`) of the girls involved in every package index (romfs and
+  aoc), reads hers and the other girl's for each design, and serves hers blended as a mod file from memory:
+  - the breast presets (0, 1, 6, 7) of each, every float by the amount; a field that isn't a float from the nearer;
+  - a mod's own copy of either file is used in its place; a girl another takes from gives her original;
+  - all 6688 of the game's are stored uncompressed, so they are read straight from the archives.
+  - `doaxmod.py body` first wrote these files into the mod; it now only writes a `body.ini` to fill in and prints the
+    girls' breast sizes.
+  - Checked: Momiji like Marie Rose at 0.7, 586 costumes blended at start in 93 ms (22 stay hers), and a 340-second
+    run through the beach and the shower with no trouble.
+- **Found on the way** ([CHARACTER_MODELS.md](CHARACTER_MODELS.md#soft-parts-of-the-body)):
+  - The soft body's presets are the costumes' `_YWRK.ywrk` files, per girl, not `<GIRL>_YWRK_PHYD.phyd` (that holds
+    the body's collision bones).
+  - Only Kasumi, Marie Rose and Honoka have costume models; the other eight wear Kasumi's.
+  - The girls' character ids are 2-12 in package order (checked for Kokoro, Hitomi and Momiji by their hair models).
+
+## Body settings: butt, thighs, arms, calves, waist, jiggle, and collision that follows the shape
+
+- **New settings** (the launcher's Mods tab, two columns of sliders; or `body.ini`): `butt_size`, `thigh_size`,
+  `arm_size`, `calf_size`, `waist_size`, and `bust_jiggle`, `butt_jiggle`, `thigh_jiggle`
+  ([MODDING.md](MODDING.md#body-shape-bust-butt-thighs-arms-calves-waist-and-jiggle)).
+- **Butt:** as the bust, on `OPT_Hips_*_base` and the 14 soft-body points each side (`OPT_ywrk_hip_*`). Arms, thighs,
+  calves, waist: thicker or thinner across the bone (about the line from its joint to the next joint), with the
+  twist and joint helper bones (`OPT_AS_*`) and the thighs' soft-body points (`OPT_ywrk_leg_*`); never longer.
+- **Jiggle:** a bigger bust didn't seem to move. Scaling the skin moves no soft-body point, so it swung as far as
+  before, which on a bigger bust reads as stiff. `Character::ApplySoftBodyParams` gives each point one value from the
+  costume's `_YWRK.ywrk` preset (floats 4-21), and the game's own softness levels multiply exactly those
+  (`FUN_7000260ec0`'s per-girl table: level 2 x0, 5 x1, 8 about x1.5; Kasumi's breasts 0.07-0.44, Marie Rose's
+  0.03-0.10). `runtime/mods.c` now scales them per region when the game starts (breasts presets 0, 1, 6, 7; bottom
+  2, 3, 8, 9; thighs 4, 5, 10, 11) by size times jiggle, as the levels do (a factor of 1 or more leaves values under
+  0.1 alone).
+- **Collision:** the arms sank into a bigger bust, and the hair too. The soft body keeps its points out of the arms
+  and body (the girl's `_YWRK_PHYD.phyd`, `YWCL` shapes on `MOT08_LeftArm`, the hands ...), but the points stayed at
+  the old size. They now move with the shape: bind world (`GlblMtx`) and local (`HieLay`) moved by d, inverse bind
+  A T(-d) B, so the skin stays where the shape puts it and the arms meet the new surface. The hair's colliders
+  (`ACSCLS` table 1 ellipsoids) follow too: a bigger bust's by its size (a smaller one's by its volume, as before),
+  the arms', thighs' and waist's by their thickness.
+- **Not covered:** arms crossing in front of the chest in an animation can still meet a much bigger bust (only the
+  breasts give way); thicker arms don't widen the arms' own `YWCL` shapes.
+- **Checked in game:** Kasumi at bust 1.40, bust jiggle 1.5, butt 1.25, thighs 1.15, arms 1.20, calves 1.10, waist
+  0.85, in the opening close-up, on the pier and in the evening scenes: the shapes hold, the edges blend, no torn
+  skin. 608 costumes' presets scaled at start in 60-210 ms. Movement and arm contact need watching in motion.
+- `LARECOMP_BODY_INI=<file>`: a body.ini to read in place of the launcher's (test runs).
+
+## Body settings: breast colliders, bust weight and the breasts meeting, for a bigger bust
+
+- **Hair on a bigger bust:** many costumes' collider tables (ACSCLS table 1) have no breast colliders. A bigger bust
+  now gives the costume a copy of the table with one ellipsoid collider on each breast base (kind 2, the base's index
+  and name hash), its half sizes from where the soft-body points now are in the base's frame, 15 % more for the skin
+  beyond them. The copy is in guest memory above the game's heap (0x7310000000, 128 MB, committed as needed: the
+  chunk's table offsets are 32 bits from it) and the chunk's table 1 offset points at it. A record's bone is found by
+  its index (`FUN_70005b76d0`). Seen in game (`LARECOMP_BODY_PROBE`): Kasumi at bust 1.8 has 12 colliders instead of
+  10, the two new ones on the breasts, 18 cm front to back.
+- **Arm spacing** (tried, then taken out): turning the upper arms out about the shoulder and moving the forearms with
+  the elbow stretched and twisted the arms in poses; a bust should give way to the arms, not the arms to it.
+- **Bust weight** (`bust_weight`, 0.5 to 3, the Mods tab's slider), along gravity: a first version sheared the breasts
+  down in the body's frame, which hung them toward her feet whatever her pose. Now `tools/patches.py`
+  SOFT_BODY_UPDATE replaces the tail call in `FUN_7000009ed0` (the character's soft body, +0x78, and its bone matrices,
+  +0x20, to `FUN_7000268020`, whose last step `FUN_70002677a0` writes the points' world matrices) with the update and
+  then `rt_body_soft_post`: each breast point down the world's -y by k (its reach along the breast's direction now),
+  k = 0.35 (weight - 1), at most 0.7 (lighter: up, at most 0.3). A girl is known by her resources record; her points by
+  the costume model's node numbers, noted after her size is put on.
+  - Checked: moving every bone up 0.5 there lifts her whole body on screen, and moving only the 36 breast points lifts
+    the breasts: the screen draws these matrices as left.
+  - Nothing is taken back before the next update: the game writes the points' matrices afresh every frame before it
+    (none was as it was left). A first version subtracted last frame's change there, which the physics took as motion
+    and ran away (the breasts drifting further each frame).
+- **Breasts meet** (`bust_contact`, 0 to 1, default 1; with a bigger or heavier bust): in the same place, after the
+  weight. Each point's rest place is its base's matrix now times where the point sits from its base in the bind pose
+  (after the size). How far a breast has moved toward the other (along the line between the two bases) is the mean of
+  its points' moves from rest, weighted 0.25 (outermost) to 1 (innermost, by bind-pose distance from her middle). When
+  the two add up to more than 5 mm, both are pushed back apart by the excess, half each, each point by 0.5 to 1 of
+  that (the inner ones most), times `bust_contact`. Swaying the same way adds up to nothing. Seen on Kasumi at bust
+  2.0: the bounce swings each breast up to 3.7 cm toward the other; at bust 1.8, weight 2, the log says they moved
+  toward each other up to 4.5 cm and were pushed apart in 370 of 600 updates.
+- Measured on Kasumi's body: the breast skin reaches 9.7 cm in front of its base and 9 cm to each side; the soft-body
+  points 8.4 cm.
+
+## Body settings: collision and physics that follow the size, a Save button, bigger ranges
+
+- **What the user saw:** arms and hair going through a bigger bust, and Marie Rose's settings not showing.
+- **Hair:** the live colliders (`LARECOMP_BODY_PROBE=1` logs the accessory physics' colliders every 20 s:
+  `*0x7000a8c900` +0xc0, 0x7f0 bytes each, an axes-times-size matrix first) showed that many costumes have no breast
+  colliders: the hair rests on the chest's ellipsoid, which a bigger bust grew through. The chest's (and the hips', for
+  the butt) now reaches out by how much further the furthest soft-body point goes (`COL_PUSH`: half size added, centre
+  moved half, the far side staying), where its rotation keeps it on the bone's axes. Seen in game: the chest
+  collider's front-back size 0.118 -> 0.138 at bust 1.5.
+- **Soft body:** `FUN_7000261320` (its step) reads a second preset block (+0x148, 0x1bc bytes, converted per level by
+  `FUN_7000262b80`) with five arrays of a float per point; the one at +0x1e4 is computed and capped at 0.06 (how far a
+  point may swing, it seems), the one at +0x22c holds 2-20 mm. Both now scale with the part's size, so a bigger bust
+  swings and is met in proportion; jiggle now only sets how lively (it no longer also multiplies by the size).
+- **Not found yet:** what makes the breasts give way to the arms; arms crossing in front of a much bigger bust can still
+  go through it.
+- **Marie Rose:** the character select screen doesn't build the girls with `Character::Create` (Kasumi's first build
+  in a run is after it), so body settings show only from the scenes after it.
+- **Launcher:** Save writes every tab (larecomp.ini, body.ini, mods on or off) without starting the game; bust and butt
+  up to 2.50, thighs, arms and calves 2.00, waist 1.80.
+
+## Launcher: Game, Controls and Mods tabs (`launcher/launcher.c`)
+
+- **Tabs:** the window is wider (860 x 600 at 100 %) with three tabs; Ctrl+Tab and Ctrl+Shift+Tab switch. Game holds
+  the display and graphics settings in two columns. Play saves every tab; Quit saves nothing.
+- **Controls** (in place of the Controls choice and the Controller buttons window):
+  - a controller drawn in the launcher's colors (face buttons by position, shoulders, triggers, sticks, d-pad,
+    Start and Back) with the game button on each of its buttons;
+  - pointing at one names it, clicking one opens that game button's list, and a focused list lights its button pink;
+  - each game button's list (named for Xbox and PlayStation, as before; picking a button another game button is on
+    swaps the two);
+  - two templates: Default (the Switch layout) and Swapped (A and B, X and Y);
+  - game buttons on buttons the picture doesn't have (Elite paddles, Share, ...) are listed under it.
+  - It writes `bind_pad_*` lines as before, only for buttons off their default.
+- **Mods:**
+  - each folder in `mods/`, and On: Play renames a mod turned on or off (an off mod's name starts with `_`);
+  - which girls its files change, what its own `body.ini` sets, and Open folder;
+  - body settings per girl, whatever mods are on: Bust size (a slider, 0.30 to 1.50), "Like another girl's" (her size
+    on this girl's body), Bust physics (her own, or like another girl's) and how much like hers, and "As she is";
+  - the sliders show what she gets in the game (the mods' settings, then the launcher's), and a note names the mods
+    that set her too.
+  - Play saves them in `body.ini` beside `larecomp.ini` (`runtime/hle/body_shape.c` reads it after every mod's), only
+    the settings that differ from what the mods give her ("As she is" over a mod writes `bust_physics = none`);
+    comments and other lines stay.
+  - The first version saved them in the selected mod's `body.ini`; it opened on the first mod, which was off, so a
+    Kasumi setting never reached the game.
+- **Sliders** are the launcher's own control: the system's themed trackbar lost what its custom draw painted.
+- **Checked** in a scratch folder (a stand-in game exe), driven by window messages: the files written (a new
+  `body.ini`, one edited with its comments kept, a mod turned on by its rename, the bindings in larecomp.ini with its
+  other lines kept), and captures of each tab at 100 % and 150 % scaling.
+
 ## Launcher: the game's look, and controller buttons
 
 - **Look:** a sky-blue header with the game's cover art and title logo, over a blue-to-cyan body, white labels, a
@@ -512,7 +705,9 @@ Added in this project:
 | `LARECOMP_DUMP_MEM=<frame>:<lo>:<hi>:<file>` | guest memory [lo, hi) (hex) saved at that frame |
 | `LARECOMP_COUNTER_SCAN=<frame>` | logs the floats that change by the same step every frame from that frame on (`[scan]`), in the game's globals and heap |
 | `LARECOMP_PEEK=<addr>[,...]` | logs those floats whenever they change (`[peek]`) |
-| `LARECOMP_NO_MODS=1` | no mods |
+| `LARECOMP_NO_MODS=1` | no mods (nor body settings) |
+| `LARECOMP_BODY_INI=<file>` | that body.ini in place of the launcher's (test runs) |
+| `LARECOMP_BODY_PROBE=1` | log the accessory physics' colliders (hair) every 20 s |
 
 Inherited from LAS Recomp and used here:
 

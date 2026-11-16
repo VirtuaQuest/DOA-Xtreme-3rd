@@ -1384,8 +1384,13 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
                     (double)d->max_aniso, (double)d->lod_min, (double)d->lod_max, (double)d->lod_bias, d->compare_mode);
     }
     // The Video setting "Texture filtering" (anisotropy): at least that much on the game's mipmapped, filtered textures
-    // (floors, sand and water seen at an angle stay sharp further away). Not depth compares (shadows) or unfiltered ones.
-    if (g_settings.anisotropy > 1 && mf > 1 && si.magFilter == VK_FILTER_LINEAR && !d->compare_mode &&
+    // (floors, sand and water seen at an angle stay sharp further away). Not depth compares (shadows) or unfiltered ones,
+    // nor textures the game minifies unfiltered (nearest), nor samplers held to one level (lod 0..0: the game reads its
+    // own buffers through those, and anisotropy there put blocky yellow-green specks over the girls' hair and swimsuits).
+    static int only = -2;  // (LARECOMP_ANISO_ONLY=<min filter> (test): only on samplers with that one)
+    if (only == -2) only = getenv("LARECOMP_ANISO_ONLY") ? atoi(getenv("LARECOMP_ANISO_ONLY")) : -1;
+    if (g_settings.anisotropy > 1 && mf > 1 && si.magFilter == VK_FILTER_LINEAR && si.minFilter == VK_FILTER_LINEAR &&
+        si.maxLod > si.minLod + 0.5f && !d->compare_mode && (only < 0 || (int)mf == only) &&
         (!si.anisotropyEnable || si.maxAnisotropy < g_settings.anisotropy)) {
         si.anisotropyEnable = VK_TRUE;
         si.maxAnisotropy = (float)g_settings.anisotropy;

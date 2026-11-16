@@ -293,12 +293,270 @@ def got_entry(module, i):
     return (a & ~0xFFF) + (imm << 12) + ((module.words[i + 1] >> 10) & 0xFFF) * 8
 
 
-def fiber_waiting(pad_got):
+def fiber_waiting(pad_got, motion):
+    """motion: the girls' motion player's functions and data windows (motion_find), for its in-between frames."""
+    fns, windows = motion
+    table = ', '.join(f'{a:#x}ull' for a in fns)
+    wins = ', '.join(f'{lo:#x}ull, {hi:#x}ull' for lo, hi in windows)
+
     def emit(module, a):
-        return ('{ extern uint32_t rt_fiber_waiting(uint32_t, uint32_t, uint64_t); '
-                f'c->x[9] = rt_fiber_waiting((uint32_t)c->x[8], (uint32_t)c->x[9] & 3, {pad_got:#x}ull); }}'
+        # (the instruction is the `and w9, w9, #3` of the slot's flags: the runtime gets them whole - bit 2 is a fiber
+        # that hasn't run yet - and gives back the state, 1 for "runs this update")
+        return ('{ extern uint32_t rt_fiber_waiting(Cpu *, uint32_t, uint32_t, uint64_t, const uint64_t *, '
+                'const uint64_t *, int); '
+                f'static const uint64_t fns_[] = {{{table}}}, wins_[] = {{{wins}}}; '
+                f'c->x[9] = rt_fiber_waiting(c, (uint32_t)c->x[8], (uint32_t)c->x[9], {pad_got:#x}ull, fns_, wins_, '
+                f'{len(windows)}); }}'
                 f'  /* {a:#x}: does a fiber wait this update (tools/patches.py) */')
     return emit
+
+
+# The girls' motion player (SlotMotion::FiberMain, 1.0.6 0x700016e500: fiber 0x11) runs at the Switch's 30 Hz with the
+# other fibers under 60 / 120 fps - its ticks advance the motions, run their scripts, raise one-tick flags and pulses
+# the 30 Hz fibers (the volleyball AI) read, count timers and record replays - so the girls moved at 30 fps. In
+# between, the runtime draws them where they'd be part of a tick later (runtime/hle/game_hooks.c motion_pass): it saves
+# the motion player's data, runs each girl's motion and root for that part of a tick with the game's own functions,
+# builds her bones and updates her model, then puts the data back, so the next tick runs exactly as on the Switch.
+# These find those functions, the data they use (the windows saved: what their GOT entries point to) and the sites:
+# the tick's characters update (its step: the display's, as every in-between frame adds one too), which girls a tick
+# advanced, and the calls that reach past the motion player's data (script commands, starting, changing and ending a
+# motion, the face's motion), which only the ticks make.
+MOTION_TICK_END = (
+    0x394002E8,                # ldrb w8, [x23]            (Game::g_paused)
+    0xBD400300,                # ldr  s0, [x24]            (Game::g_step)
+    0x7100011F,                # cmp  w8, #0
+    0x1E280C00,                # fcsel s0, s0, s8, eq      (0 while paused)
+    (0x94000000, 0xFC000000),  # bl   <the characters' update (step)>
+    0x320003E0,                # mov  w0, #1
+    (0x94000000, 0xFC000000),  # bl   Fiber::WaitFrames
+    (0x94000000, 0xFC000000),  # bl   <check for changed characters>
+    0x394002A8,                # ldrb w8, [x21]            (the match state: 5 a volleyball replay)
+    0x7100151F,                # cmp  w8, #5
+)
+MOTION_TICK = (
+    0x394002E8,                # ldrb w8, [x23]            (Game::g_paused)
+    (0x35000008, 0xFF00001F),  # cbnz w8, <paused>
+    0xAA1F03E0,                # mov  x0, xzr
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::UpdateSlot
+    0x320003E0,                # mov  w0, #1
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::UpdateSlot
+    0x321F03E0,                # mov  w0, #2
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::UpdateSlot
+    0x320007E0,                # mov  w0, #3
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::UpdateSlot
+    0xAA1F03E0,                # mov  x0, xzr
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::ApplyRootMotion
+)
+MOTION_BONES = (
+    (0x94000000, 0xFC000000),  # bl   <volleyball teammates kept apart>
+    0xAA1F03E0,                # mov  x0, xzr
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::BuildBoneMatrices
+    0x320003E0,                # mov  w0, #1
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::BuildBoneMatrices
+    0x321F03E0,                # mov  w0, #2
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::BuildBoneMatrices
+    0x320007E0,                # mov  w0, #3
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::BuildBoneMatrices
+    0xB9400328,                # ldr  w8, [x25]            (the game phase)
+    0x7100111F,                # cmp  w8, #4
+)
+MOTION_ADVANCE = (  # in SlotMotion::UpdateSlot
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   <a blend's start>
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::AdvanceMotion
+    0x78737B08,                # ldrh w8, [x24, x19, lsl #1]  (the blend's frames left)
+    (0x34000008, 0xFF00001F),  # cbz  w8, <not blending>
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::StepBlend
+)
+# The calls of SlotMotion::UpdateSlot that reach past the motion player's data (sounds, effects, the face's animator,
+# loading a motion): made at the ticks only, not in between.
+MOTION_COMMANDS = (
+    0x78FA6B68,                # ldrsh w8, [x27, x26]
+    0x3100051F,                # cmn  w8, #1
+    (0x54000001, 0xFF00001F),  # b.ne
+    (0x90000008, 0x9F00001F),  # adrp x8, <page>
+    (0xF9400108, 0xFFC003FF),  # ldr  x8, [x8, #<GOT>]
+    0x38736908,                # ldrb w8, [x8, x19]
+    (0x34000008, 0xFF00001F),  # cbz  w8
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   SlotScript::RunDueCommands
+)
+MOTION_CHANGE = (
+    0x38736908,                # ldrb w8, [x8, x19]
+    (0x35000008, 0xFF00001F),  # cbnz w8
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   SlotScript::SkipToStartFrame
+    0xB8737A81,                # ldr  w1, [x20, x19, lsl #2]
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::ChangeMotion
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   <the script's flags published>
+)
+MOTION_FACE_END = (
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::MaybeEndFaceMotion
+    (0x90000008, 0x9F00001F),  # adrp x8, <page>
+    (0xF9400108, 0xFFC003FF),  # ldr  x8, [x8, #<GOT>]
+    0x7833791F,                # strh wzr, [x8, x19, lsl #1]
+    0x321B17E8,                # mov  w8, #0x7e0
+    0x9B085A68,                # madd x8, x19, x8, x22
+    0xB907D11F,                # str  wzr, [x8, #0x7d0]
+)
+MOTION_END_DELAY = (  # in SlotMotion::UpdateSlot: a new motion's start, script command 0x15's end delay, the motion's end
+    (0x94000000, 0xFC000000),  # bl   SlotMotion::StartRequestedMotion
+    (0x90000008, 0x9F00001F),  # adrp x8, <page>
+    (0xF9400108, 0xFFC003FF),  # ldr  x8, [x8, #<GOT>]
+    0x78F37909,                # ldrsh w9, [x8, x19, lsl #1]
+    (0x34000009, 0xFF00001F),  # cbz  w9, <none>
+    0x71000529,                # subs w9, w9, #1
+    (0x5400000B, 0xFF00001F),  # b.lt
+    0x72003D3F,                # tst  w9, #0xffff
+    0x78337909,                # strh w9, [x8, x19, lsl #1]
+    (0x54000001, 0xFF00001F),  # b.ne
+    (0x90000008, 0x9F00001F),  # adrp x8, <page>
+    (0xF9400108, 0xFFC003FF),  # ldr  x8, [x8, #<GOT>]
+    0x78737908,                # ldrh w8, [x8, x19, lsl #1]
+    (0x35000008, 0xFF00001F),  # cbnz w8
+    0xAA1303E0,                # mov  x0, x19
+    (0x94000000, 0xFC000000),  # bl   SlotScript::EndMotion
+)
+# The volleyball's ball (Volleyball::Ball::Step, 1.0.6 0x7000236590; run by the girls' fiber 8 at 30 Hz): its record
+# (struct VolleyballBall: +0x0 position, +0xc the last tick's, +0x60 spin, +0x6c spin speed) through the GOT entry the
+# adrp x19 / ldr x19 pair loads. The in-between frames carry it on as they do the girls (runtime/hle/game_hooks.c).
+BALL_STEP = (
+    (0x90000013, 0x9F00001F),  # adrp x19, <page>
+    (0x90000008, 0x9F00001F),  # adrp x8, <page>
+    (0xF9400273, 0xFFC003FF),  # ldr  x19, [x19, #<GOT>]     (the ball)
+    (0xF9400108, 0xFFC003FF),  # ldr  x8, [x8, #<GOT>]
+    0xB900011F,                # str  wzr, [x8]
+    0xF9400268,                # ldr  x8, [x19]              (its position ...)
+    0xB9400A69,                # ldr  w9, [x19, #8]
+    0xF800C268,                # stur x8, [x19, #0xc]        (... kept as the last one)
+)
+STEP_BLEND = (  # in SlotMotion::StepBlend: its blend time + 1.0; 34 words on, the call of SlotMotion::ApplyBlend
+    0xD37EF668,                # lsl  x8, x19, #2
+    0xBC686920,                # ldr  s0, [x9, x8]
+    0x1E2E1001,                # fmov s1, #1.0
+    0x1E38000B,                # fcvtzs w11, s0
+    0x1E212800,                # fadd s0, s0, s1
+    0x1E38000A,                # fcvtzs w10, s0
+    0xBC286920,                # str  s0, [x9, x8]
+    0x4B0B0148,                # sub  w8, w10, w11
+)
+
+
+def bl_target(module, a):
+    w = module.word(a)
+    if (w & 0xFC000000) != 0x94000000:
+        raise ValueError(f'{a:#x}: not a bl')
+    off = w & 0x3FFFFFF
+    return a + (off - (1 << 26) if off & (1 << 25) else off) * 4
+
+
+def got_data(module, lo, hi):
+    """The data addresses the code in [lo, hi) loads from its GOT (adrp + ldr; the GOT's relative relocations)."""
+    from nso import R_AARCH64_RELATIVE
+    rel = getattr(module, '_rel', None)
+    if rel is None:
+        rel = module._rel = {off: add for off, typ, sym, add in module.nso.relocs if typ == R_AARCH64_RELATIVE}
+    page, out = {}, set()
+    for a in range(lo, hi, 4):
+        w = module.word(a)
+        if (w & 0x9F000000) == 0x90000000:  # adrp
+            imm = (((w >> 5) & 0x7FFFF) << 2) | ((w >> 29) & 3)
+            page[w & 31] = (a & ~0xFFF) + ((imm - (1 << 21) if imm & (1 << 20) else imm) << 12)
+        elif (w & 0xFFC00000) == 0xF9400000 and ((w >> 5) & 31) in page:  # ldr x, [x, #imm]
+            t = rel.get(page[(w >> 5) & 31] + ((w >> 10) & 0xFFF) * 8 - module.base)
+            if t is not None and not module.in_text(module.base + t):
+                out.add(module.base + t)
+    return out
+
+
+def motion_find(module, patches):
+    import bisect
+    i = find_one(module.words, MOTION_TICK_END, 'motion tick end')
+    a = module.lo + i * 4
+    chars_update = bl_target(module, a + 16)
+    patches[a + 4] = motion_anim_step
+    i = find_one(module.words, MOTION_TICK, 'motion tick')
+    update_slot = bl_target(module, module.lo + (i + 3) * 4)
+    root_motion = bl_target(module, module.lo + (i + 11) * 4)
+    i = find_one(module.words, MOTION_BONES, 'motion bones')
+    bones = bl_target(module, module.lo + (i + 2) * 4)
+    i = find_one(module.words, MOTION_ADVANCE, 'motion advance')
+    a = module.lo + i * 4
+    advance, step_blend = bl_target(module, a + 12), bl_target(module, a + 28)
+    patches[a + 12] = motion_mark
+    i = find_one(module.words, MOTION_END_DELAY, 'motion end delay')
+    end_motion = bl_target(module, module.lo + (i + 15) * 4)
+    for k in (0, 15):
+        patches[module.lo + (i + k) * 4] = motion_tick_only
+    for pattern, ks, what in ((MOTION_COMMANDS, (8,), 'motion commands'), (MOTION_CHANGE, (3, 6), 'motion change'),
+                              (MOTION_FACE_END, (1,), 'motion face end')):
+        i = find_one(module.words, pattern, what)
+        for k in ks:
+            patches[module.lo + (i + k) * 4] = motion_tick_only
+    i = find_one(module.words, STEP_BLEND, 'step blend')
+    apply_blend = bl_target(module, module.lo + (i + 2 + 34) * 4)
+    starts = module.boundaries()
+
+    def fn_range(f):  # (past the last function: an SDK import's stub, nothing of ours)
+        k = bisect.bisect_right(starts, f) - 1
+        return (starts[k], starts[k + 1]) if 0 <= k < len(starts) - 1 else (f, f)
+    lo, hi = fn_range(advance)
+    ends = [x for x in range(lo, hi, 4) if (module.word(x) & 0xFC000000) == 0x94000000 and bl_target(module, x) == end_motion]
+    if len(ends) != 1:
+        raise ValueError(f'motion end in SlotMotion::AdvanceMotion: {len(ends)} calls')
+    patches[ends[0]] = motion_tick_only
+    # (the data the tick and the in-between frame use, from these functions and the ones they call)
+    data = set()
+    for f in {update_slot, advance, apply_blend, step_blend, root_motion, bones, chars_update, end_motion}:
+        lo, hi = fn_range(f)
+        data |= got_data(module, lo, hi)
+        for x in range(lo, hi, 4):
+            if (module.word(x) & 0xFC000000) == 0x94000000:
+                t = bl_target(module, x)
+                if module.in_text(t) and t < module.hi:
+                    data |= got_data(module, *fn_range(t))
+    windows = []
+    for d in sorted(data):  # (each address and 8 KB after it: tables indexed by slot reach that far; merged)
+        if windows and d <= windows[-1][1]:
+            windows[-1][1] = max(windows[-1][1], d + 0x2000)
+        else:
+            windows.append([d, d + 0x2000])
+    total = sum(hi - lo for lo, hi in windows)
+    if total > 0x100000:
+        raise ValueError(f'motion data windows: {total:#x} bytes, more than expected')
+    print(f'game: motion player data windows {len(windows)}, {total // 1024} KB', file=sys.stderr)
+    i = find_one(module.words, BALL_STEP, 'volleyball ball step')
+    w = module.words[i]
+    imm = (((w >> 5) & 0x7FFFF) << 2) | ((w >> 29) & 3)
+    page = ((module.lo + i * 4) & ~0xFFF) + ((imm - (1 << 21) if imm & (1 << 20) else imm) << 12)
+    ball_got = page + ((module.words[i + 2] >> 10) & 0xFFF) * 8
+    return (update_slot, root_motion, bones, chars_update, ball_got), [tuple(w) for w in windows]
+
+
+def motion_anim_step(module, a):
+    return ('{ extern uint32_t rt_motion_anim_step(Cpu *, uint32_t); '
+            'c->v[0] = rt_motion_anim_step(c, (uint32_t)LD32(c->x[24])); }'
+            f'  /* {a:#x}: the characters\' update step at a motion tick (tools/patches.py) */')
+
+
+def motion_mark(module, a):
+    t = bl_target(module, a)
+    return ('{ extern void rt_motion_mark(uint32_t); '
+            f'extern void f_{t:x}(Cpu *); rt_motion_mark((uint32_t)c->x[0]); '
+            f'c->x[30] = {a + 4:#x}ull; f_{t:x}(c); }}'
+            f'  /* {a:#x}: a girl\'s motion advanced this tick (tools/patches.py) */')
+
+
+def motion_tick_only(module, a):
+    t = bl_target(module, a)
+    return ('{ extern int rt_motion_in_pass(void); '
+            f'extern void f_{t:x}(Cpu *); if (!rt_motion_in_pass()) {{ c->x[30] = {a + 4:#x}ull; f_{t:x}(c); }} }}'
+            f'  /* {a:#x}: at the motion ticks only, not in between (tools/patches.py) */')
 
 
 def fiber_switch(module, a):
@@ -457,6 +715,57 @@ def worker_state_load(module, a):
             f'  /* {a:#x}: the worker\'s state (tools/patches.py) */')
 
 
+# Character::Create (1.0.6 0x700000c6c0) once it has a girl's files (her costume model, which carries the body, and the
+# rest; resources at x21, her character id in w22), on both of its paths: the files collected from her package loaders,
+# or a ready-made record copied. The runtime's body settings (mods' body.ini: runtime/hle/body_shape.c) change her
+# costume model there, before anything is built from it.
+CHAR_FILES_COPIED = (
+    0x52801B02,                # mov  w2, #0xd8
+    0xAA1503E0,                # mov  x0, x21
+    0xAA1303E1,                # mov  x1, x19
+    (0x94000000, 0xFC000000),  # bl   memcpy
+    0xF94002A8,                # ldr  x8, [x21]            (the main model)
+    (0xB4000008, 0xFF00001F),  # cbz  x8
+)
+CHAR_FILES_COLLECTED = (
+    0x8B131D00,                # add  x0, x8, x19, lsl #7  (the second package loader)
+    0xAA1503E1,                # mov  x1, x21
+    (0x94000000, 0xFC000000),  # bl   CharacterPack::FillSecondFiles
+    0xF94002A8,                # ldr  x8, [x21]            (the main model)
+    (0xB5000008, 0xFF00001F),  # cbnz x8
+)
+
+
+def char_files_load(module, a):
+    return ('{ extern void rt_body_files(uint32_t, uint64_t); rt_body_files((uint32_t)c->x[22] & 0xffff, c->x[21]); '
+            'c->x[8] = *(uint64_t *)(uintptr_t)c->x[21]; }'
+            f'  /* {a:#x}: a girl\'s files, before her character is built (tools/patches.py) */')
+
+
+# A character's soft body's update (FUN_7000009ed0: when the character has a soft body (+0x78), a tail call to
+# 0x7000268020 with it and the character's bone matrices (+0x20); the update steps the soft body and writes its points'
+# world matrices): after it the runtime pulls the breasts' points down along gravity (bust weight) and pushes the two
+# breasts apart where they meet (runtime/hle/body_shape.c rt_body_soft_post). Nothing needs taking back: the points'
+# matrices are written afresh every frame before the update (seen: none was as it was left).
+SOFT_BODY_UPDATE = (
+    0xF9403C08,                # ldr  x8, [x0, #0x78]      (the soft body)
+    (0xB4000008, 0xFF00001F),  # cbz  x8
+    0xF9401001,                # ldr  x1, [x0, #0x20]      (the bone matrices)
+    0xAA0803E0,                # mov  x0, x8
+    (0x14000000, 0xFC000000),  # b    (the update, a tail call)
+)
+
+
+def soft_body_update(module, a):
+    w = module.words[(a - module.lo) // 4]
+    off = (w & 0x3FFFFFF) - (1 << 26 if w & (1 << 25) else 0)
+    fn = a + off * 4
+    return ('{ extern void rt_body_soft_post(uint64_t, uint64_t); '
+            f'extern void f_{fn:x}(Cpu *); uint64_t p_ = c->x[0], m_ = c->x[1]; '
+            f'f_{fn:x}(c); rt_body_soft_post(p_, m_); return; }}'
+            f'  /* {a:#x}: a soft body\'s update, then the bust weight and contact (tools/patches.py) */')
+
+
 def find_one(words, pattern, what):
     """Index of the one place in words matching pattern ((word, mask) pairs, or plain words)."""
     pat = [p if isinstance(p, tuple) else (p, 0xFFFFFFFF) for p in pattern]
@@ -492,7 +801,7 @@ def find(module):
     patches[module.lo + i * 4] = logic_count_step_load
     i = find_one(module.words, FIBER_RUN, 'fiber scheduler')
     pad = find_one(module.words, PAD_CLEAR, 'pad clear')
-    patches[module.lo + (i + 2) * 4] = fiber_waiting(got_entry(module, pad))
+    patches[module.lo + (i + 2) * 4] = fiber_waiting(got_entry(module, pad), motion_find(module, patches))
     patches[module.lo + (i + 16) * 4] = fiber_switch
     i = find_one(module.words, TICKS60, '60 Hz ticks')
     patches[module.lo + (i + 7) * 4] = ticks60_count
@@ -514,4 +823,10 @@ def find(module):
     patches[module.lo + (i + 5) * 4] = time_step_load
     i = find_one(module.words, UPDATES_FN, 'updates per frame')
     patches[module.lo + (i + 7) * 4] = updates_add
+    i = find_one(module.words, CHAR_FILES_COPIED, 'character files copied')
+    patches[module.lo + (i + 4) * 4] = char_files_load
+    i = find_one(module.words, CHAR_FILES_COLLECTED, 'character files collected')
+    patches[module.lo + (i + 3) * 4] = char_files_load
+    i = find_one(module.words, SOFT_BODY_UPDATE, 'soft body update')
+    patches[module.lo + (i + 4) * 4] = soft_body_update
     return patches

@@ -58,15 +58,19 @@ game again, in the setup window, without extracting your files again.
    3. **Build:** press *Build the game*. It extracts your game files into `extracted/`, recompiles the game's code into
       `generated/`, and compiles the program into `build/`. Allow about an hour (54 minutes on a 10-core PC with all DLC).
       It runs in the background, and *Show details* shows what it's doing.
-4. **Play.** Press *Play* in Setup, or double-click `Play.bat` any time later. The launcher lets you choose windowed,
-   borderless or fullscreen, the resolution, the 3D resolution, the controls, the frame rate (30 by default; 60 and
-   120 are experimental: volleyball and some menus don't play the same yet), anti-aliasing (SMAA), texture filtering (up to 16x
-   anisotropic), the upscaler (AMD FSR 1 or bilinear), the FPS counter and whether the controller works in the
-   background, then starts the game.
-   *Controls*: **Switch controls** keeps A on the right face button and B on the bottom one, as on a Switch;
-   **Other** swaps A with B and X with Y, so A is the bottom button, as on an Xbox controller.
-   **Customize...** puts each of the game's buttons on any controller button (named for Xbox, PlayStation and Switch
-   pads); they're saved when you press Play. Keyboard keys (and buttons too) can also be changed in the game's menu (F1).
+4. **Play.** Press *Play* in Setup, or double-click `Play.bat` any time later. The launcher has three tabs, and
+   Play saves them all and starts the game:
+   - *Game*: windowed, borderless or fullscreen, the resolution, the 3D resolution, the frame rate (30 by default; 60
+     and 120 are experimental: volleyball and some menus don't play the same yet), anti-aliasing (SMAA), texture
+     filtering (up to 16x anisotropic), the upscaler (AMD FSR 1 or bilinear), the FPS counter and whether the
+     controller works in the background.
+   - *Controls*: a picture of a controller with the game's button on each of its buttons, and a list per game button
+     to put it on any controller button (named for Xbox and PlayStation pads; click a button in the picture to
+     change it). Two templates: **Default** keeps A on the right face button and B on the bottom one, as on a Switch;
+     **Swapped** swaps A with B and X with Y, so A is the bottom button, as on an Xbox controller. Keyboard keys (and
+     buttons too) can also be changed in the game's menu (F1).
+   - *Mods*: your mods in the `mods` folder, on or off, and each girl's figure and jiggle (see
+     [docs/MODDING.md](docs/MODDING.md#body-shape-bust-butt-thighs-arms-calves-waist-and-jiggle)).
    The launcher shows your copy's cover art and title logo, read from your own game files on your PC after the build;
    the download contains none.
 

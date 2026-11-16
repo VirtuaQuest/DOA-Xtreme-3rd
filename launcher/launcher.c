@@ -1,10 +1,17 @@
-// DOAX3 Recomp launcher (Windows): pick the display mode (windowed, borderless fullscreen, fullscreen), the
-// resolution, the 3D resolution and 60 fps, then start build/doax3recomp.exe as tools/run.sh does. The choices go into
-// larecomp.ini (fullscreen, fullscreen_mode, window_size, render3d, frame_rate, antialias, anisotropy, upscaler,
-// show_fps, background_input: runtime/settings.c), so the game's own menu and
-// F11 keep working with them; every other line of the file is kept as it is. The controls choice and the Controller
-// buttons window write the controller's bind_pad_<button> lines (runtime/hle/bindings.c), only for buttons that differ
-// from the game's default (the game reads a missing line as the default); bind_key_* lines stay as they are.
+// DOAX3 Recomp launcher (Windows): three tabs, then Play starts build/doax3recomp.exe as tools/run.sh does.
+//   Game      the display mode (windowed, borderless fullscreen, fullscreen), the resolution, the 3D resolution, the
+//             upscaler, the frame rate, anti-aliasing, texture filtering, Show FPS and background controller input
+//   Controls  a controller drawn with the game's button on each of its buttons, the controller button each of the
+//             game's buttons is on, and two templates: the game's default (A on the right face button, as on a
+//             Switch) and A and B, X and Y swapped (A at the bottom, as on an Xbox pad)
+//   Mods      the mods in mods/ (on or off: an off mod's folder name starts with _), and each girl's body settings:
+//             bust size, and breast physics like another girl's, in body.ini beside larecomp.ini, which the game reads
+//             after every mod's body.ini (runtime/hle/body_shape.c, runtime/mods.c; docs/MODDING.md, "Body shape")
+// The Game and Controls choices go into larecomp.ini (fullscreen, fullscreen_mode, window_size, render3d, frame_rate,
+// antialias, anisotropy, upscaler, show_fps, background_input: runtime/settings.c; the controller's bind_pad_<button>
+// lines, runtime/hle/bindings.c, only for buttons off the game's default, which is what a missing line means), so the
+// game's own menu and F11 keep working with them; every other line of the file is kept as it is (bind_key_* too).
+// Play saves everything: larecomp.ini, body.ini, then a mod turned on or off is renamed.
 // The look: the game's colors, painted (sky over the sea), and the player's own art when it's there, read when the
 // launcher starts (never built in: the launcher is shipped prebuilt and has nothing from the game): the home menu
 // cover (extracted/control/icon_AmericanEnglish.dat) and the title logo the build takes from the game files
@@ -24,18 +31,23 @@
 #include <wchar.h>
 #include <wincodec.h>
 
-enum { ID_MODE = 100, ID_RES, ID_R3D, ID_NOTE, ID_FPS, ID_PAD, ID_AA, ID_AF, ID_UPS, ID_SHOWFPS, ID_BGIN, ID_PADEDIT,
-       ID_FPSHINT };
-enum { ID_BIND0 = 300, ID_PRESET_SWITCH = 400, ID_PRESET_OTHER, ID_PSTATUS };  // (the Controller buttons window)
+enum { ID_MODE = 100, ID_RES, ID_R3D, ID_NOTE, ID_FPS, ID_AA, ID_AF, ID_UPS, ID_SHOWFPS, ID_BGIN, ID_FPSHINT, ID_SAVE,
+       ID_SAVENOTE };
+enum { ID_TAB0 = 200 };  // (the tabs: ID_TAB0 + TAB_*)
+enum { ID_BIND0 = 300, ID_PRESET_SWITCH = 400, ID_PRESET_OTHER, ID_PSTATUS, ID_PADPIC, ID_PADHINT };  // (Controls)
+enum { ID_MOD = 500, ID_MOD_ON, ID_MOD_OPEN, ID_MOD_NOTE, ID_GIRL, ID_GIRL_RESET,
+       ID_SIZE_LIKE, ID_PHYS, ID_AMOUNT, ID_AMOUNT_VAL, ID_BODY_NOTE, ID_VAL0 = 600, ID_VALTXT0 = 650 };  // (Mods: ID_VAL0 + K_*, its slider)
 enum { MODE_WINDOWED, MODE_BORDERLESS, MODE_FULLSCREEN };
+enum { TAB_GAME, TAB_CONTROLS, TAB_MODS, NTABS };
 
 static wchar_t g_exe_dir[MAX_PATH], g_root[MAX_PATH], g_game[MAX_PATH], g_ini[MAX_PATH], g_title[0x201];
-static HWND g_mode, g_res, g_r3d, g_note, g_fps, g_fpshint, g_pad, g_aa, g_af, g_ups, g_showfps, g_bgin;
+static HWND g_mode, g_res, g_r3d, g_note, g_fps, g_fpshint, g_aa, g_af, g_ups, g_showfps, g_bgin;
 static HFONT g_font, g_bold, g_semi, g_big, g_sym;
 static int g_dpi = 96;
 static struct { int w, h; } g_sizes[128];
 static int g_nsizes, g_desk_w, g_desk_h;
 
+static const wchar_t *const k_tab_names[NTABS] = {L"Game", L"Controls", L"Mods"};
 static const wchar_t *const k_modes[] = {L"Windowed", L"Borderless fullscreen", L"Fullscreen"};
 static const char *const k_r3d_keys[] = {"auto", "original", "1080p", "1440p", "4k"};  // (larecomp.ini render3d)
 static const wchar_t *const k_r3d_names[] = {L"Default for your GPU", L"Original (1600x900)", L"1920x1080",
@@ -62,44 +74,48 @@ static const int k_af_vals[] = {0, 2, 4, 8, 16};
 static const char *const k_ups_keys[] = {"auto", "fsr1", "bilinear"};
 static const wchar_t *const k_ups_names[] = {L"Default for your GPU", L"AMD FSR 1 (sharper)", L"Bilinear (softer)"};
 // ---- the controller: the game's buttons (bindings.c k_ini, the first 16) and the controller's buttons by position
-// (bindings.c k_pad_ini, here in the order the lists show them). Switch controls: the game's default, A on the right
-// face button as on a Switch; Other: A and B swapped, X and Y swapped (A at the bottom, as on an Xbox pad).
+// (bindings.c k_pad_ini; the first 16 are the ones drawn). The default: A on the right face button as on a Switch;
+// Swapped: A and B swapped, X and Y swapped (A at the bottom, as on an Xbox pad).
 enum { PAD_SWITCH, PAD_OTHER, PAD_CUSTOM };
 #define NSLOTS 16
 static const char *const k_slot_keys[NSLOTS] = {"a",    "b",    "x",   "y",  "lstick", "rstick", "l",     "r",
                                                 "zl",   "zr",   "plus", "minus", "left", "up",   "right", "down"};
 static const wchar_t *const k_slot_names[NSLOTS] = {
-    L"A", L"B", L"X", L"Y", L"Left stick press", L"Right stick press", L"L", L"R", L"ZL", L"ZR", L"Plus (+)",
+    L"A", L"B", L"X", L"Y", L"L stick press", L"R stick press", L"L", L"R", L"ZL", L"ZR", L"Plus (+)",
     L"Minus (-)", L"D-pad Left", L"D-pad Up", L"D-pad Right", L"D-pad Down"};
+static const wchar_t *const k_slot_glyph[NSLOTS] = {  // (on the drawn controller)
+    L"A", L"B", L"X", L"Y", L"LS", L"RS", L"L", L"R", L"ZL", L"ZR", L"+", L"\x2212", L"\x2190", L"\x2191", L"\x2192",
+    L"\x2193"};
 static const char *const k_slot_default[NSLOTS] = {
     "east", "south", "north", "west", "lstick", "rstick", "lshoulder", "rshoulder", "ltrigger", "rtrigger", "start",
     "back", "dpad_left", "dpad_up", "dpad_right", "dpad_down"};
-static const char *const k_face_other[4] = {"south", "east", "west", "north"};  // (A, B, X, Y in Other)
-static const int k_panel_order[NSLOTS] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 4, 5, 12, 13, 14, 15};  // (two columns)
+static const char *const k_face_other[4] = {"south", "east", "west", "north"};  // (A, B, X, Y in Swapped)
+// The Controls tab's two columns, top to bottom, about where the default puts each button on the controller
+static const int k_col_left[8] = {8, 6, 11, 4, 13, 12, 14, 15}, k_col_right[8] = {9, 7, 10, 2, 3, 0, 1, 5};
 static const struct { const char *key; const wchar_t *name; } k_hosts[] = {
-    {"south", L"Bottom face (Xbox A / PS Cross / Switch B)"},
-    {"east", L"Right face (Xbox B / PS Circle / Switch A)"},
-    {"west", L"Left face (Xbox X / PS Square / Switch Y)"},
-    {"north", L"Top face (Xbox Y / PS Triangle / Switch X)"},
+    {"south", L"Bottom (Xbox A, PS Cross)"},
+    {"east", L"Right (Xbox B, PS Circle)"},
+    {"west", L"Left (Xbox X, PS Square)"},
+    {"north", L"Top (Xbox Y, PS Triangle)"},
     {"lshoulder", L"LB / L1 / L"},
     {"rshoulder", L"RB / R1 / R"},
     {"ltrigger", L"LT / L2 / ZL"},
     {"rtrigger", L"RT / R2 / ZR"},
     {"start", L"Start / Options / +"},
     {"back", L"Back / Share / -"},
-    {"lstick", L"Left stick press (LS / L3)"},
-    {"rstick", L"Right stick press (RS / R3)"},
+    {"lstick", L"Left stick press"},
+    {"rstick", L"Right stick press"},
     {"dpad_left", L"D-pad Left"},
     {"dpad_up", L"D-pad Up"},
     {"dpad_right", L"D-pad Right"},
     {"dpad_down", L"D-pad Down"},
-    {"rpaddle1", L"Right paddle 1 (Xbox Elite P1)"},
-    {"rpaddle2", L"Right paddle 2 (Xbox Elite P2)"},
-    {"lpaddle1", L"Left paddle 1 (Xbox Elite P3)"},
-    {"lpaddle2", L"Left paddle 2 (Xbox Elite P4)"},
-    {"misc1", L"Xbox Share / PS5 Mute / Switch Capture"},
+    {"rpaddle1", L"Right paddle 1 (Elite P1)"},
+    {"rpaddle2", L"Right paddle 2 (Elite P2)"},
+    {"lpaddle1", L"Left paddle 1 (Elite P3)"},
+    {"lpaddle2", L"Left paddle 2 (Elite P4)"},
+    {"misc1", L"Share / Mute / Capture"},
     {"touchpad", L"PS touchpad press"},
-    {"guide", L"Guide (Xbox / PS / Home button)"},
+    {"guide", L"Guide / PS / Home"},
     {"misc2", L"Extra button 2"},
     {"misc3", L"Extra button 3"},
     {"misc4", L"Extra button 4"},
@@ -107,12 +123,24 @@ static const struct { const char *key; const wchar_t *name; } k_hosts[] = {
     {"misc6", L"Extra button 6"},
 };
 #define NHOSTS ((int)(sizeof k_hosts / sizeof *k_hosts))
-static const wchar_t *const k_pad_names[] = {L"Switch controls", L"Other (A and B, X and Y swapped)", L"Custom"};
-// Bindings as k_hosts indexes: the default, Other, the launcher's (saved with Play), the last custom ones (the main
-// window's Custom choice brings them back) and the Controller buttons window's own until OK
-static int g_def[NSLOTS], g_other[NSLOTS], g_bind[NSLOTS], g_custom[NSLOTS], g_pbind[NSLOTS];
+#define NDRAWN 16  // (the controller buttons in the picture: k_hosts' first 16)
+static const wchar_t *const k_pad_names[] = {L"Default (Switch layout)", L"Swapped (A\x2194" L"B, X\x2194" L"Y)",
+                                             L"Custom"};
+// Bindings as k_hosts indexes: the game's default, Swapped, and the launcher's (saved with Play)
+static int g_def[NSLOTS], g_other[NSLOTS], g_bind[NSLOTS];
+
+// ---- the girls (body.ini sections: runtime/hle/body_shape.c GIRL_IDS). bust: how far her breasts stand out next to
+// Kasumi's body, which all but Marie Rose and Honoka wear (tools/mods/doaxmod.py body measures it).
+#define NGIRLS 11
+static const struct { const char *code, *name; float bust; } k_girls[NGIRLS] = {
+    {"KAS", "Kasumi", 1}, {"MAR", "Marie Rose", .63f}, {"HON", "Honoka", 1.06f}, {"AYA", "Ayane", 1},
+    {"NYO", "Nyotengu", 1}, {"KOK", "Kokoro", 1}, {"HTM", "Hitomi", 1}, {"MOM", "Momiji", 1}, {"HEL", "Helena", 1},
+    {"MIS", "Misaki", 1}, {"LEI", "Leifang", 1},
+};
+#define CALMEST 1  // (Marie Rose: her breasts move least)
 
 static int px(int v) { return MulDiv(v, g_dpi, 96); }
+static int pxf(float v) { return (int)floorf(v * g_dpi / 96.f + .5f); }
 
 static BOOL exists(const wchar_t *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
 
@@ -252,7 +280,6 @@ static void init_binds(void) {
     for (int i = 0; i < NSLOTS; i++) g_def[i] = g_other[i] = host_index(k_slot_default[i]);
     for (int i = 0; i < 4; i++) g_other[i] = host_index(k_face_other[i]);
     memcpy(g_bind, g_def, sizeof g_bind);
-    memcpy(g_custom, g_def, sizeof g_custom);
 }
 
 static int pad_layout(const int *b) {
@@ -269,16 +296,332 @@ static int bind_assign(int *b, int slot, int host) {
     return moved;
 }
 
-static void sync_pad_combo(void) {  // the main window's Controls choice from g_bind (Custom listed when it's custom)
-    int layout = pad_layout(g_bind);
-    if (layout == PAD_CUSTOM) {
-        memcpy(g_custom, g_bind, sizeof g_custom);
-        if (SendMessageW(g_pad, CB_GETCOUNT, 0, 0) < 3)
-            SendMessageW(g_pad, CB_ADDSTRING, 0, (LPARAM)k_pad_names[PAD_CUSTOM]);
-    }
-    SendMessageW(g_pad, CB_SETCURSEL, layout, 0);
+// ---- body settings, girl by girl: the launcher's body.ini (beside larecomp.ini), which the game reads after every
+// mod's, so its settings win; and the mods (mods/<name>, off when the name starts with _), some with a body.ini of
+// their own (runtime/hle/body_shape.c)
+#define MAXMODS 64
+// The settings: the numbers (1: as she is; runtime/hle/body_shape.c BODY_KEYS has the same names and ranges), then the
+// breast physics (K_PHYS: the k_girls index whose physics she takes, -1 her own; K_AMOUNT: how far)
+enum { K_BUST, K_BUST_JIG, K_BUTT, K_BUTT_JIG, K_THIGH, K_THIGH_JIG, K_ARM, K_CALF, K_WAIST, K_WEIGHT, K_CONTACT, NVAL, K_PHYS = NVAL,
+       K_AMOUNT, NKEYS };
+static const struct { const char *key; const wchar_t *label; float lo, hi; BOOL pct; } k_vals[NVAL] = {
+    {"bust_size", L"Bust size", .3f, 2.5f, FALSE},   {"bust_jiggle", L"Bust jiggle", 0, 2, TRUE},
+    {"butt_size", L"Butt size", .5f, 2.5f, FALSE},   {"butt_jiggle", L"Butt jiggle", 0, 2, TRUE},
+    {"thigh_size", L"Thighs", .7f, 2.0f, FALSE},     {"thigh_jiggle", L"Thigh jiggle", 0, 2, TRUE},
+    {"arm_size", L"Arms", .7f, 2.0f, FALSE},         {"calf_size", L"Calves", .7f, 2.0f, FALSE},
+    {"waist_size", L"Waist", .7f, 1.8f, FALSE},       {"bust_weight", L"Bust weight", .5f, 3, TRUE},
+    {"bust_contact", L"Breasts meet", 0, 1, TRUE},
+};
+// A girl's settings in one body.ini; has[]: the ones the file sets ("bust_physics = none" sets her own over a mod's)
+typedef struct { float v[NVAL], amount; int phys; BOOL has[NKEYS]; } Body;
+typedef struct {
+    wchar_t name[MAX_PATH];  // (without an off mod's _)
+    BOOL on, was_on;         // (was_on: as its folder is named now)
+    Body body[NGIRLS];
+    BOOL changes[NGIRLS];  // (the girls whose game files it replaces)
+} Mod;
+static Mod g_mods[MAXMODS];
+static Body g_body[NGIRLS];  // (the launcher's own body.ini)
+static BOOL g_body_dirty;
+static int g_nmod, g_cur_mod = -1, g_girl;
+
+static void body_reset(Body *b) {
+    memset(b, 0, sizeof *b);
+    for (int k = 0; k < NVAL; k++) b->v[k] = 1;
+    b->amount = 1, b->phys = -1;
 }
 
+static BOOL body_any(const Body *b) {
+    for (int k = 0; k < NKEYS; k++)
+        if (b->has[k]) return TRUE;
+    return FALSE;
+}
+
+static BOOL body_not_default(const Body *b) {  // (she isn't as the game has her)
+    for (int k = 0; k < NVAL; k++)
+        if (fabsf(b->v[k] - 1) > .004f) return TRUE;
+    return b->phys >= 0;
+}
+
+static int girl_index(const char *s) {  // (a code or a name, as runtime/hle/body_shape.c reads them)
+    for (int i = 0; i < NGIRLS; i++) {
+        size_t first = strcspn(k_girls[i].name, " ");
+        if (!_stricmp(s, k_girls[i].code) || !_stricmp(s, k_girls[i].name) ||
+            (strlen(s) == first && !_strnicmp(s, k_girls[i].name, first)))
+            return i;
+    }
+    return -1;
+}
+
+static void mod_folder(const Mod *m, BOOL on, wchar_t *out) {
+    swprintf(out, MAX_PATH, L"%ls\\mods\\%ls%ls", g_root, on ? L"" : L"_", m->name);
+}
+
+static void body_path(wchar_t *out) { swprintf(out, MAX_PATH + 16, L"%ls\\body.ini", g_root); }
+
+static char *trim(char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    char *e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) *--e = 0;
+    return s;
+}
+
+static void body_load(const wchar_t *path, Body *body) {
+    for (int g = 0; g < NGIRLS; g++) body_reset(&body[g]);
+    FILE *f = _wfopen(path, L"rb");
+    if (!f) return;
+    char line[512];
+    int cur = -1;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "#;")] = 0;
+        char *s = trim(line);
+        if (*s == '[') {
+            char *e = strchr(s, ']');
+            if (e) *e = 0;
+            cur = girl_index(trim(s + 1));
+            continue;
+        }
+        char *eq = strchr(s, '=');
+        if (!eq || cur < 0) continue;
+        *eq = 0;
+        char *k = trim(s), *v = trim(eq + 1);
+        Body *b = &body[cur];
+        float x = (float)atof(v);
+        int g = girl_index(v);
+        for (int i = 0; i < NVAL; i++)
+            if (!strcmp(k, k_vals[i].key) && x >= k_vals[i].lo && x <= k_vals[i].hi) b->v[i] = x, b->has[i] = TRUE;
+        if (!strcmp(k, "bust_physics") && (g >= 0 || !*v || !_stricmp(v, "none")))
+            b->phys = g != cur ? g : -1, b->has[K_PHYS] = TRUE;
+        else if (!strcmp(k, "bust_physics_amount") && x >= 0 && x <= 1) b->amount = x, b->has[K_AMOUNT] = TRUE;
+    }
+    fclose(f);
+}
+
+static void body_over(Body *r, const Body *b) {  // (b's settings over r's)
+    for (int k = 0; k < NVAL; k++)
+        if (b->has[k]) r->v[k] = b->v[k];
+    if (b->has[K_PHYS]) r->phys = b->phys;
+    if (b->has[K_AMOUNT]) r->amount = b->amount;
+}
+
+// What the mods that are on give girl g (in the game's order, by name: a later one's setting wins); with the
+// launcher's settings over them (mine), what she gets
+static Body body_of(int g, BOOL mine) {
+    Body r;
+    body_reset(&r);
+    BOOL done[MAXMODS] = {0};
+    for (;;) {
+        int next = -1;
+        for (int i = 0; i < g_nmod; i++)
+            if (g_mods[i].on && !done[i] && (next < 0 || wcscmp(g_mods[i].name, g_mods[next].name) < 0)) next = i;
+        if (next < 0) break;
+        done[next] = TRUE;
+        body_over(&r, &g_mods[next].body[g]);
+    }
+    if (mine) body_over(&r, &g_body[g]);
+    return r;
+}
+
+// The launcher's setting for girl g: kept only when it differs from what the mods give her (phys: for K_PHYS)
+static void body_put(int g, int key, float x, int phys) {
+    Body base = body_of(g, FALSE), *b = &g_body[g];
+    if (key < NVAL) b->v[key] = x, b->has[key] = fabsf(x - base.v[key]) > .004f;
+    else if (key == K_PHYS) b->phys = phys, b->has[K_PHYS] = phys != base.phys;
+    else b->amount = x, b->has[K_AMOUNT] = fabsf(x - base.amount) > .004f;
+    g_body_dirty = TRUE;
+}
+
+static void mod_scan_changes(Mod *m) {  // (romfs/<package>/character/<girl>/...)
+    wchar_t base[MAX_PATH], p[MAX_PATH];
+    mod_folder(m, m->was_on, base);
+    swprintf(p, MAX_PATH, L"%ls\\romfs\\*", base);
+    WIN32_FIND_DATAW pk, ch;
+    HANDLE h = FindFirstFileW(p, &pk);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(pk.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || pk.cFileName[0] == L'.') continue;
+        swprintf(p, MAX_PATH, L"%ls\\romfs\\%ls\\character\\*", base, pk.cFileName);
+        HANDLE h2 = FindFirstFileW(p, &ch);
+        if (h2 == INVALID_HANDLE_VALUE) continue;
+        do {
+            char code[16];
+            if (!(ch.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || wcslen(ch.cFileName) > 8) continue;
+            WideCharToMultiByte(CP_UTF8, 0, ch.cFileName, -1, code, sizeof code, NULL, NULL);
+            int g = girl_index(code);
+            if (g >= 0 && strlen(code) == 3) m->changes[g] = TRUE;
+        } while (FindNextFileW(h2, &ch));
+        FindClose(h2);
+    } while (FindNextFileW(h, &pk));
+    FindClose(h);
+}
+
+static int mod_cmp(const void *a, const void *b) { return _wcsicmp(((const Mod *)a)->name, ((const Mod *)b)->name); }
+
+static void mods_load(void) {
+    wchar_t p[MAX_PATH + 16];
+    body_path(p);
+    body_load(p, g_body);
+    swprintf(p, MAX_PATH, L"%ls\\mods\\*", g_root);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(p, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' || g_nmod == MAXMODS) continue;
+        Mod *m = &g_mods[g_nmod++];
+        memset(m, 0, sizeof *m);
+        m->on = m->was_on = fd.cFileName[0] != L'_';
+        wcscpy(m->name, fd.cFileName + !m->on);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(g_mods, g_nmod, sizeof *g_mods, mod_cmp);
+    for (int i = 0; i < g_nmod; i++) {
+        mod_folder(&g_mods[i], g_mods[i].was_on, p);
+        wcscat(p, L"\\body.ini");
+        body_load(p, g_mods[i].body);
+        mod_scan_changes(&g_mods[i]);
+    }
+}
+
+// body.ini as lines, rewritten setting by setting: other lines (comments, other girls) stay as they are
+static char *g_bl[1024];
+static int g_nbl;
+
+static BOOL bl_blank(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    return !*s || *s == '#' || *s == ';';
+}
+
+static BOOL bl_head(int i, const char *code) {  // (a [section] line; code NULL: any)
+    const char *s = g_bl[i];
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s != '[') return FALSE;
+    if (!code) return TRUE;
+    char t[64];
+    snprintf(t, sizeof t, "%s", s + 1);
+    t[strcspn(t, "]")] = 0;
+    return girl_index(trim(t)) == girl_index(code);
+}
+
+static void bl_insert(int at, const char *s) {
+    if (g_nbl >= 1024) return;
+    memmove(g_bl + at + 1, g_bl + at, (g_nbl - at) * sizeof *g_bl);
+    g_bl[at] = _strdup(s);
+    g_nbl++;
+}
+
+static void bl_delete(int at) {
+    free(g_bl[at]);
+    memmove(g_bl + at, g_bl + at + 1, (g_nbl - at - 1) * sizeof *g_bl);
+    g_nbl--;
+}
+
+static int bl_end(int head) {  // (after the section's last line that isn't blank)
+    int j = head + 1;
+    while (j < g_nbl && !bl_head(j, NULL)) j++;
+    while (j > head + 1 && bl_blank(g_bl[j - 1])) j--;
+    return j;
+}
+
+static int bl_key(int head, const char *key) {
+    size_t n = strlen(key);
+    for (int j = head + 1; j < g_nbl && !bl_head(j, NULL); j++) {
+        const char *s = g_bl[j];
+        while (*s == ' ' || *s == '\t') s++;
+        if (!strncmp(s, key, n) && (s[n] == ' ' || s[n] == '\t' || s[n] == '=')) return j;
+    }
+    return -1;
+}
+
+static BOOL body_save(wchar_t *err, size_t n) {  // (the launcher's body.ini)
+    wchar_t p[MAX_PATH + 16];
+    body_path(p);
+    BOOL any = FALSE;
+    for (int g = 0; g < NGIRLS; g++) any |= body_any(&g_body[g]);
+    g_nbl = 0;
+    FILE *f = _wfopen(p, L"rb");
+    if (!f && !any) return g_body_dirty = FALSE, TRUE;
+    char line[1024];
+    if (f) {
+        while (g_nbl < 1024 && fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            g_bl[g_nbl++] = _strdup(line);
+        }
+        fclose(f);
+    } else {
+        bl_insert(0, "# Body settings from the launcher's Mods tab (docs/MODDING.md, \"Body shape\"). The game reads them "
+                     "when it starts,");
+        bl_insert(1, "# after every mod's body.ini, so these win. One section per girl, by her code; delete a line (or "
+                     "the file) to undo.");
+        bl_insert(2, "");
+    }
+    for (int g = 0; g < NGIRLS; g++) {
+        const Body *b = &g_body[g];
+        char key[NKEYS][32], val[NKEYS][32];
+        for (int k = 0; k < NKEYS; k++) {
+            snprintf(key[k], 32, "%s", k < NVAL ? k_vals[k].key : k == K_PHYS ? "bust_physics" : "bust_physics_amount");
+            val[k][0] = 0;
+            if (!b->has[k]) continue;
+            if (k < NVAL) snprintf(val[k], 32, "%.2f", b->v[k]);
+            else if (k == K_PHYS) snprintf(val[k], 32, "%s", b->phys >= 0 ? k_girls[b->phys].code : "none");
+            else snprintf(val[k], 32, "%.2f", b->amount);
+        }
+        int head = -1;
+        for (int j = 0; j < g_nbl && head < 0; j++)
+            if (bl_head(j, k_girls[g].code)) head = j;
+        if (head < 0) {
+            if (!body_any(b)) continue;
+            if (g_nbl && !bl_blank(g_bl[g_nbl - 1])) bl_insert(g_nbl, "");
+            snprintf(line, sizeof line, "[%s]", k_girls[g].code);
+            bl_insert(g_nbl, line);
+            head = g_nbl - 1;
+        }
+        for (int k = 0; k < NKEYS; k++) {
+            int j = bl_key(head, key[k]);
+            if (!val[k][0]) {
+                if (j >= 0) bl_delete(j);
+                continue;
+            }
+            snprintf(line, sizeof line, "%s = %s", key[k], val[k]);
+            if (j >= 0) free(g_bl[j]), g_bl[j] = _strdup(line);
+            else bl_insert(bl_end(head), line);
+        }
+        BOOL left = FALSE;  // (a section with no settings left: its header goes too)
+        for (int j = head + 1; j < g_nbl && !bl_head(j, NULL); j++) left |= !bl_blank(g_bl[j]);
+        if (!left) bl_delete(head);
+    }
+    f = _wfopen(p, L"wb");
+    BOOL ok = f != NULL;
+    for (int j = 0; j < g_nbl; j++) {
+        if (f) fprintf(f, "%s\n", g_bl[j]);
+        free(g_bl[j]);
+    }
+    g_nbl = 0;
+    if (f) ok = fclose(f) == 0;
+    if (!ok) swprintf(err, n, L"Couldn't write %ls.", p);
+    else g_body_dirty = FALSE;
+    return ok;
+}
+
+// Everything the Mods tab changed: the launcher's body.ini, then the mods turned on or off (their folders renamed)
+static BOOL mods_save(wchar_t *err, size_t n) {
+    if (g_body_dirty && !body_save(err, n)) return FALSE;
+    for (int i = 0; i < g_nmod; i++) {
+        Mod *m = &g_mods[i];
+        if (m->on == m->was_on) continue;
+        wchar_t from[MAX_PATH], to[MAX_PATH];
+        mod_folder(m, m->was_on, from);
+        mod_folder(m, m->on, to);
+        if (!MoveFileW(from, to)) {
+            swprintf(err, n, L"Couldn't turn the mod %ls %ls: renaming its folder failed (error %lu). Is the game "
+                     L"running, or a window open in that folder?", m->name, m->on ? L"on" : L"off", GetLastError());
+            return FALSE;
+        }
+        m->was_on = m->on;
+    }
+    return TRUE;
+}
+
+// ---- Game tab
 static void update_note(void) {
     int mode = (int)SendMessageW(g_mode, CB_GETCURSEL, 0, 0);
     EnableWindow(g_res, mode != MODE_BORDERLESS);
@@ -337,7 +680,6 @@ static void load_choices(void) {
         int h = host_index(ini_get(key));
         g_bind[i] = h >= 0 ? h : g_def[i];
     }
-    sync_pad_combo();
     update_note();
 }
 
@@ -509,9 +851,9 @@ static int play(void) {
 }
 
 // ---- the look: the game's colors, a bright sky over the sea with a white and a pink line along the shore between them,
-// painted once per window into a bitmap that the window, its labels and its buttons copy from. The labels (owner-drawn
-// statics), buttons and check boxes (custom draw) are drawn here, so their text can be white on the sea; the combo
-// boxes are the system's own.
+// painted once into a bitmap that the window and its controls copy from. The labels (owner-drawn statics), buttons,
+// tabs and check boxes (custom draw), the sliders and the controller picture are drawn here, so their text can be
+// white on the sea; the combo boxes are the system's own.
 #define SKY_TOP RGB(0xF4, 0xFC, 0xFF)
 #define SKY_BOTTOM RGB(0x9A, 0xDF, 0xF7)
 #define SEA_TOP RGB(0x0B, 0x52, 0xB2)
@@ -523,12 +865,14 @@ static int play(void) {
 #define WHITE RGB(0xFF, 0xFF, 0xFF)
 #define WARN RGB(0xFF, 0xB4, 0x6A)  // (the Frame rate line's warning)
 #define NO_SHADOW ((COLORREF)-1)
-// (a control's GWLP_USERDATA; ROLE_FPS: the Frame rate line, a note in WARN while it warns)
-enum { ROLE_LABEL, ROLE_NOTE, ROLE_HEAD, ROLE_FPS, ROLE_BUTTON = 0x100, ROLE_PRIMARY, ROLE_CHECK };
-enum { MAIN_W = 490, MAIN_H = 592, MAIN_HEADER = 122, PANEL_W = 822, PANEL_H = 458, PANEL_HEADER = 64 };
+// (a control's GWLP_USERDATA; ROLE_FPS: the Frame rate line, a note in WARN while it warns; ROLE_CENTER: a note
+// centered; ROLE_VALUE: a slider's value)
+enum { ROLE_LABEL, ROLE_NOTE, ROLE_HEAD, ROLE_FPS, ROLE_CENTER, ROLE_VALUE, ROLE_BUTTON = 0x100, ROLE_PRIMARY,
+       ROLE_CHECK, ROLE_TAB };
+enum { MAIN_W = 860, MAIN_H = 600, MAIN_HEADER = 122, TAB_Y = 138, PAD_W = 240, PAD_H = 180 };
 
 typedef struct { HDC dc; HBITMAP bmp; HGDIOBJ old; int w, h; } Backdrop;
-static Backdrop g_main_bd, g_panel_bd;
+static Backdrop g_main_bd;
 
 static float clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
@@ -735,15 +1079,19 @@ static void paint_main_header(Backdrop *bd) {
 static void draw_label(const DRAWITEMSTRUCT *d) {
     int role = (int)GetWindowLongPtrW(d->hwndItem, GWLP_USERDATA);
     backdrop_blit(d->hwndItem, d->hDC, &d->rcItem);
-    wchar_t t[512];
-    GetWindowTextW(d->hwndItem, t, 512);
+    wchar_t t[1024];
+    GetWindowTextW(d->hwndItem, t, 1024);
     HGDIOBJ old = SelectObject(d->hDC, (HFONT)SendMessageW(d->hwndItem, WM_GETFONT, 0, 0));
     UINT fmt = DT_NOPREFIX | (role == ROLE_NOTE || role == ROLE_FPS ? DT_WORDBREAK
+                              : role == ROLE_CENTER                  ? DT_WORDBREAK | DT_CENTER
                                                                      : DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-    COLORREF c = role == ROLE_LABEL ? WHITE : role == ROLE_FPS && g_fps_hint > 0 ? WARN : YELLOW;
+    COLORREF c = role == ROLE_LABEL || role == ROLE_VALUE ? WHITE : role == ROLE_FPS && g_fps_hint > 0 ? WARN : YELLOW;
+    if (!IsWindowEnabled(d->hwndItem)) c = RGB(0x9C, 0xBC, 0xDC);
     text(d->hDC, t, d->rcItem, fmt, c, SHADOW);
     SelectObject(d->hDC, old);
 }
+
+static int g_tab;  // (the tab shown)
 
 static LRESULT draw_button(const NMCUSTOMDRAW *cd) {
     if (cd->dwDrawStage != CDDS_PREPAINT) return CDRF_DODEFAULT;
@@ -782,7 +1130,15 @@ static LRESULT draw_button(const NMCUSTOMDRAW *cd) {
             f.right = f.right + px(2) < r.right ? f.right + px(2) : r.right;
             DrawFocusRect(dc, &f);
         }
-    } else {  // pink (Play, OK) or deep blue, rounded
+    } else if (role == ROLE_TAB && GetDlgCtrlID(b) - ID_TAB0 == g_tab) {  // the tab shown: white, a pink edge
+        round_rect(dc, 0, 0, r.right, r.bottom, px(8), WHITE, RGB(0xDC, 0xF2, 0xFC), PINK, 2 * bw, 255);
+        text(dc, t, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX, DEEP, NO_SHADOW);
+        if (focus) {
+            RECT f = r;
+            InflateRect(&f, -px(4), -px(4));
+            DrawFocusRect(dc, &f);
+        }
+    } else {  // pink (Play) or deep blue, rounded (a tab not shown too)
         COLORREF top, bottom, border, shadow;
         if (role == ROLE_PRIMARY)
             top = RGB(0xFF, 0x74, 0xB8), bottom = RGB(0xE8, 0x1E, 0x7C), border = RGB(0xFF, 0xC8, 0xE2),
@@ -810,7 +1166,114 @@ static LRESULT draw_button(const NMCUSTOMDRAW *cd) {
     return CDRF_SKIPDEFAULT;
 }
 
-// What both windows do to look like this; TRUE when the message is handled (*res: its result)
+// A slider of its own (the system's trackbar, themed, loses what custom draw paints): a rounded track, pink up to a
+// round white thumb. It takes the trackbar's TBM_SETRANGE, TBM_SETPOS, TBM_GETPOS, TBM_SETPAGESIZE and TBM_SETLINESIZE,
+// and tells its parent of a move with WM_HSCROLL (lParam: the slider), as a trackbar does. The arrow keys move it by a
+// line, Page Up / Page Down by a page, Home / End to the ends.
+typedef struct { int lo, hi, pos, page, line; BOOL drag; } Slider;
+
+static void slider_rects(HWND s, const Slider *d, int *x0, int *x1, int *thumb) {
+    RECT r;
+    GetClientRect(s, &r);
+    int rad = px(9);
+    *x0 = rad, *x1 = r.right - rad;
+    *thumb = d->hi > d->lo ? *x0 + MulDiv(d->pos - d->lo, *x1 - *x0, d->hi - d->lo) : *x0;
+}
+
+static void slider_set(HWND s, Slider *d, int v, BOOL notify) {
+    v = v < d->lo ? d->lo : v > d->hi ? d->hi : v;
+    if (v == d->pos) return;
+    d->pos = v;
+    InvalidateRect(s, NULL, FALSE);
+    if (notify) SendMessageW(GetParent(s), WM_HSCROLL, MAKEWPARAM(SB_THUMBPOSITION, v), (LPARAM)s);
+}
+
+static LRESULT CALLBACK sliderproc(HWND s, UINT msg, WPARAM wp, LPARAM lp) {
+    Slider *d = (Slider *)GetWindowLongPtrW(s, 0);
+    switch (msg) {
+    case WM_NCCREATE:
+        d = calloc(1, sizeof *d);
+        if (!d) return FALSE;
+        d->hi = 100, d->page = 10, d->line = 1;
+        SetWindowLongPtrW(s, 0, (LONG_PTR)d);
+        break;
+    case WM_NCDESTROY:
+        free(d);
+        SetWindowLongPtrW(s, 0, 0);
+        break;
+    case TBM_SETRANGE: d->lo = LOWORD(lp), d->hi = HIWORD(lp); InvalidateRect(s, NULL, FALSE); return 0;
+    case TBM_SETPAGESIZE: d->page = (int)lp; return 0;
+    case TBM_SETLINESIZE: d->line = (int)lp; return 0;
+    case TBM_SETPOS: slider_set(s, d, (int)lp, FALSE); return 0;
+    case TBM_GETPOS: return d->pos;
+    case WM_GETDLGCODE: return DLGC_WANTARROWS;
+    case WM_ERASEBKGND: return 1;
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_ENABLE:
+        InvalidateRect(s, NULL, FALSE);
+        return 0;
+    case WM_KEYDOWN: {
+        int v = d->pos;
+        switch (wp) {
+        case VK_LEFT: case VK_DOWN: v -= d->line; break;
+        case VK_RIGHT: case VK_UP: v += d->line; break;
+        case VK_PRIOR: v += d->page; break;
+        case VK_NEXT: v -= d->page; break;
+        case VK_HOME: v = d->lo; break;
+        case VK_END: v = d->hi; break;
+        default: return 0;
+        }
+        slider_set(s, d, v, TRUE);
+        return 0;
+    }
+    case WM_LBUTTONDOWN:
+        SetFocus(s);
+        SetCapture(s);
+        d->drag = TRUE;
+        // fallthrough
+    case WM_MOUSEMOVE:
+        if (d->drag) {
+            int x0, x1, t;
+            slider_rects(s, d, &x0, &x1, &t);
+            int x = (short)LOWORD(lp);
+            slider_set(s, d, x1 > x0 ? d->lo + MulDiv(x - x0, d->hi - d->lo, x1 - x0) : d->lo, TRUE);
+        }
+        return 0;
+    case WM_LBUTTONUP:
+    case WM_CAPTURECHANGED:
+        if (d->drag && msg == WM_LBUTTONUP) ReleaseCapture();
+        d->drag = FALSE;
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(s, &ps);
+        RECT r;
+        GetClientRect(s, &r);
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bmp = CreateCompatibleBitmap(dc, r.right, r.bottom);
+        HGDIOBJ old = SelectObject(mem, bmp);
+        backdrop_blit(s, mem, &r);
+        BOOL off = !IsWindowEnabled(s), focus = GetFocus() == s;
+        int x0, x1, t, h = px(6), cy = r.bottom / 2, dd = px(18);
+        slider_rects(s, d, &x0, &x1, &t);
+        round_rect(mem, x0 - h / 2, cy - h / 2, x1 - x0 + h, h, h / 2, RGB(0xD6, 0xEE, 0xFB), WHITE, 0, 0,
+                   off ? 110 : 230);
+        if (!off) round_rect(mem, x0 - h / 2, cy - h / 2, t - x0 + h, h, h / 2, RGB(0xFF, 0x74, 0xB8), PINK, 0, 0, 255);
+        round_rect(mem, t - dd / 2, cy - dd / 2, dd, dd, dd / 2, WHITE, RGB(0xE0, 0xF4, 0xFF),
+                   off ? RGB(0xA8, 0xC4, 0xE0) : focus ? YELLOW : PINK, px(2), off ? 160 : 255);
+        BitBlt(dc, 0, 0, r.right, r.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(s, &ps);
+        return 0;
+    }
+    }
+    return DefWindowProcW(s, msg, wp, lp);
+}
+
+// What the main window does to look like this; TRUE when the message is handled (*res: its result)
 static BOOL theme_msg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT *res) {
     Backdrop *bd = (Backdrop *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     switch (msg) {
@@ -835,7 +1298,8 @@ static BOOL theme_msg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT *res) {
         return TRUE;
     case WM_NOTIFY: {
         NMHDR *n = (NMHDR *)lp;
-        if (n->code != NM_CUSTOMDRAW || !(GetWindowLongPtrW(n->hwndFrom, GWLP_USERDATA) & ROLE_BUTTON)) return FALSE;
+        LONG_PTR role = GetWindowLongPtrW(n->hwndFrom, GWLP_USERDATA);
+        if (n->code != NM_CUSTOMDRAW || !(role & ROLE_BUTTON)) return FALSE;
         *res = draw_button((NMCUSTOMDRAW *)lp);
         return TRUE;
     }
@@ -843,11 +1307,16 @@ static BOOL theme_msg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT *res) {
     return FALSE;
 }
 
+// The controls of each tab (shown with it); g_build_tab: the tab the controls being made belong to (-1: every tab)
+static HWND g_tab_ctl[NTABS][128], g_tabs[NTABS];
+static int g_ntab_ctl[NTABS], g_build_tab = -1;
+
 static HWND add(HWND parent, const wchar_t *cls, const wchar_t *text, DWORD style, int x, int y, int w, int h, int id,
                 HFONT font) {
     HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, px(x), px(y), px(w), px(h), parent,
                              (HMENU)(INT_PTR)id, GetModuleHandleW(NULL), NULL);
     SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
+    if (g_build_tab >= 0 && g_ntab_ctl[g_build_tab] < 128) g_tab_ctl[g_build_tab][g_ntab_ctl[g_build_tab]++] = c;
     return c;
 }
 
@@ -860,18 +1329,40 @@ static HWND add_label(HWND parent, const wchar_t *text, int x, int y, int w, int
     return role(add(parent, L"STATIC", text, SS_OWNERDRAW, x, y, w, h, id, font), r);
 }
 
-static HWND add_combo(HWND parent, const wchar_t *label, int y, int id, int w) {
-    add_label(parent, label, 20, y, 136, 24, ROLE_LABEL, -1, g_font);
-    return add(parent, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 160, y, w, 300, id, g_font);
+static HWND add_combo(HWND parent, const wchar_t *label, int x, int y, int id, int w) {  // (its label at x)
+    add_label(parent, label, x, y, 132, 24, ROLE_LABEL, -1, g_font);
+    return add(parent, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, x + 136, y, w, 300, id, g_font);
 }
 
 static HWND add_button(HWND parent, const wchar_t *text, DWORD style, int x, int y, int w, int h, int id, int r) {
     return role(add(parent, L"BUTTON", text, style | WS_TABSTOP, x, y, w, h, id, r == ROLE_PRIMARY ? g_semi : g_font), r);
 }
 
-// ---- the Controller buttons window: each of the game's buttons and the controller button it's on. Modal: the main
-// window waits; OK gives the launcher these bindings (saved with Play), Cancel forgets them.
-static HWND g_panel, g_pcombo[NSLOTS], g_pstatus;
+static HWND add_slider(HWND parent, int x, int y, int w, int id, int lo, int hi, int page) {
+    HWND s = add(parent, L"DOAX3Slider", L"", WS_TABSTOP, x, y, w, 28, id, g_font);
+    SendMessageW(s, TBM_SETRANGE, FALSE, MAKELPARAM(lo, hi));
+    SendMessageW(s, TBM_SETPAGESIZE, 0, page);
+    SendMessageW(s, TBM_SETLINESIZE, 0, 1);
+    return s;
+}
+
+static void show_tab(int t) {
+    g_tab = t;
+    HWND f = GetFocus();
+    BOOL lost = FALSE;
+    for (int k = 0; k < NTABS; k++)
+        for (int i = 0; i < g_ntab_ctl[k]; i++) {
+            HWND c = g_tab_ctl[k][i];
+            if (k != t && (c == f || IsChild(c, f))) lost = TRUE;
+            ShowWindow(c, k == t ? SW_SHOW : SW_HIDE);
+        }
+    for (int k = 0; k < NTABS; k++) InvalidateRect(g_tabs[k], NULL, FALSE);
+    if (lost) SetFocus(g_tabs[t]);
+}
+
+// ---- Controls tab: a combo box per game button, and the controller drawn with what's on each of its buttons
+static HWND g_pcombo[NSLOTS], g_pstatus, g_pic, g_padhint;
+static int g_pad_hover = -1, g_focus_slot = -1;
 
 // A list shows every controller button once it has been focused or opened, and before that only the one it's on:
 // filling 16 lists of 28 at once can take a second or more on a PC with accessibility tools listening.
@@ -883,135 +1374,442 @@ static void pcombo_show(int i, BOOL full) {
             SendMessageW(c, CB_RESETCONTENT, 0, 0);
             for (int h = 0; h < NHOSTS; h++) SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)k_hosts[h].name);
         }
-        SendMessageW(c, CB_SETCURSEL, g_pbind[i], 0);
+        SendMessageW(c, CB_SETCURSEL, g_bind[i], 0);
     } else {
         SendMessageW(c, CB_RESETCONTENT, 0, 0);
-        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)k_hosts[g_pbind[i]].name);
+        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)k_hosts[g_bind[i]].name);
         SendMessageW(c, CB_SETCURSEL, 0, 0);
     }
 }
 
-static void panel_refresh(int moved, int slot) {
-    for (int i = 0; i < NSLOTS; i++) pcombo_show(i, FALSE);
+static void pad_hint(void) {  // (under the picture: the controller button the pointer is on)
     wchar_t t[256];
-    int n = swprintf(t, 256, L"Layout: %ls", k_pad_names[pad_layout(g_pbind)]);
+    if (g_pad_hover < 0) {
+        wcscpy(t, L"Click a button on the controller to change it.");
+    } else {
+        int n = swprintf(t, 256, L"%ls: ", k_hosts[g_pad_hover].name), any = 0;
+        for (int s = 0; s < NSLOTS && n > 0; s++)
+            if (g_bind[s] == g_pad_hover)
+                n += swprintf(t + n, 256 - n, L"%ls%ls", any++ ? L", " : L"the game's ", k_slot_names[s]);
+        if (!any && n > 0) swprintf(t + n, 256 - n, L"no game button");
+    }
+    SetWindowTextW(g_padhint, t);
+    InvalidateRect(g_padhint, NULL, FALSE);
+}
+
+static void controls_refresh(int moved, int slot) {
+    for (int i = 0; i < NSLOTS; i++) pcombo_show(i, FALSE);
+    wchar_t t[512];
+    int n = swprintf(t, 512, L"Layout: %ls.", k_pad_names[pad_layout(g_bind)]);
     if (moved >= 0 && n > 0)
-        swprintf(t + n, 256 - n, L"\n%ls was on that button: it moved to %ls's old one.", k_slot_names[moved],
-                 k_slot_names[slot]);
+        n += swprintf(t + n, 512 - n, L" %ls was on that button: it moved to %ls's old one.", k_slot_names[moved],
+                      k_slot_names[slot]);
+    for (int s = 0; s < NSLOTS && n > 0; s++)  // (the ones not in the picture)
+        if (g_bind[s] >= NDRAWN) n += swprintf(t + n, 512 - n, L" %ls is on %ls.", k_slot_names[s], k_hosts[g_bind[s]].name);
     SetWindowTextW(g_pstatus, t);
+    InvalidateRect(g_pstatus, NULL, FALSE);
+    InvalidateRect(g_pic, NULL, FALSE);
+    pad_hint();
 }
 
-static void panel_close(HWND hwnd) {
-    EnableWindow(GetWindow(hwnd, GW_OWNER), TRUE);  // (first, so the main window gets the focus back)
-    DestroyWindow(hwnd);
+// The controller (96-dpi units in a PAD_W x PAD_H picture), each of k_hosts' first 16 buttons: x, y, w, h, corner
+typedef struct { float x, y, w, h, r; } PadShape;
+static const PadShape k_pad[NDRAWN] = {
+    {167, 87, 22, 22, 11}, {187, 67, 22, 22, 11}, {147, 67, 22, 22, 11}, {167, 47, 22, 22, 11},  // face: S E W N
+    {24, 20, 66, 20, 9},   {150, 20, 66, 20, 9},                                                 // LB RB
+    {32, 0, 52, 26, 9},    {156, 0, 52, 26, 9},                                                  // LT RT
+    {122, 56, 22, 13, 6},  {96, 56, 22, 13, 6},                                                  // Start Back
+    {48, 64, 28, 28, 14},  {132, 100, 28, 28, 14},                                               // sticks
+    {69, 106, 17, 16, 4},  {86, 89, 16, 17, 4},    {102, 106, 17, 16, 4}, {86, 122, 16, 17, 4},  // d-pad L U R D
+};
+static HBITMAP g_pad_body;
+
+static float sd_rrect(float x, float y, float cx, float cy, float hw, float hh, float r) {
+    float qx = fabsf(x - cx) - (hw - r), qy = fabsf(y - cy) - (hh - r), ox = fmaxf(qx, 0), oy = fmaxf(qy, 0);
+    return sqrtf(ox * ox + oy * oy) + fminf(fmaxf(qx, qy), 0) - r;
 }
 
-static LRESULT CALLBACK panelproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    LRESULT res;
-    if (theme_msg(hwnd, msg, wp, lp, &res)) return res;
+static float pad_sdf(float x, float y) {  // the body: a rounded bar and two grips, blended smoothly
+    float a = sd_rrect(x, y, 120, 82, 106, 46, 36), k = 16;
+    float b = fminf(hypotf(x - 56, y - 134) - 40, hypotf(x - 184, y - 134) - 40);
+    float h = clamp01(.5f + .5f * (b - a) / k);
+    return b + (a - b) * h - k * h * (1 - h);
+}
+
+static void pad_body_make(void) {  // (white to pale blue, a blue edge, a soft shadow; premultiplied)
+    int w = pxf(PAD_W), h = pxf(PAD_H);
+    DWORD *p;
+    if (!(g_pad_body = make_dib(w, h, &p))) return;
+    float s = 96.f / g_dpi;
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            float x = (i + .5f) * s, y = (j + .5f) * s, d = pad_sdf(x, y), ds = pad_sdf(x - 1, y - 3);
+            float ab = clamp01(.5f - d / s), as = clamp01(.5f - ds / 3) * .35f * (1 - ab);
+            COLORREF c = mix(mix(WHITE, RGB(0xC4, 0xE6, 0xF8), y / 174), RGB(0x4E, 0x9C, 0xD6), (d + 1.8f) / .8f);
+            float r = GetRValue(c) * ab + GetRValue(SHADOW) * as, g = GetGValue(c) * ab + GetGValue(SHADOW) * as,
+                  b = GetBValue(c) * ab + GetBValue(SHADOW) * as;
+            p[j * w + i] = (DWORD)((ab + as) * 255 + .5f) << 24 | (DWORD)(r + .5f) << 16 | (DWORD)(g + .5f) << 8 |
+                           (DWORD)(b + .5f);
+        }
+}
+
+static void pad_button(HDC dc, int host, BOOL label) {
+    const PadShape *s = &k_pad[host];
+    int x = pxf(s->x), y = pxf(s->y), w = pxf(s->x + s->w) - x, h = pxf(s->y + s->h) - y;
+    int slot = -1, n = 0;
+    for (int i = 0; i < NSLOTS; i++)
+        if (g_bind[i] == host) slot = slot < 0 ? i : slot, n++;
+    BOOL hl = host == g_pad_hover || (g_focus_slot >= 0 && g_bind[g_focus_slot] == host);
+    COLORREF top = RGB(0x2A, 0x6C, 0xCC), bottom = RGB(0x0C, 0x34, 0x88), border = RGB(0x08, 0x26, 0x66);
+    if (!n) top = RGB(0x9C, 0xB6, 0xD4), bottom = RGB(0x7C, 0x98, 0xBC);  // (no game button on it)
+    if (hl) top = RGB(0xFF, 0x74, 0xB8), bottom = RGB(0xE8, 0x1E, 0x7C), border = WHITE;
+    round_rect(dc, x, y, w, h, pxf(s->r), top, bottom, border, px(1), 255);
+    if (!label || slot < 0) return;
+    RECT r = {x, y, x + w, y + h};
+    if (host == 6 || host == 7) r.bottom = pxf(20);       // (the triggers: the part above the shoulders)
+    else if (host == 4 || host == 5) r.bottom = pxf(37);  // (the shoulders: the part above the body)
+    wchar_t t[16];
+    swprintf(t, 16, L"%ls%ls", k_slot_glyph[slot], n > 1 ? L"+" : L"");
+    SelectObject(dc, slot >= 12 || slot == 10 || slot == 11 ? g_sym : g_semi);
+    text(dc, t, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX, WHITE, NO_SHADOW);
+}
+
+static void pad_draw(HDC dc) {
+    for (int h = 6; h <= 7; h++) pad_button(dc, h, TRUE);  // (the triggers, then the shoulders, behind the body)
+    for (int h = 4; h <= 5; h++) pad_button(dc, h, TRUE);
+    if (!g_pad_body) pad_body_make();
+    if (g_pad_body) blend(dc, g_pad_body, 0, 0, pxf(PAD_W), pxf(PAD_H));
+    const COLORREF well0 = RGB(0xB0, 0xD8, 0xF0), well1 = RGB(0xCC, 0xE8, 0xF8);
+    round_rect(dc, pxf(43), pxf(59), pxf(38), pxf(38), pxf(19), well0, well1, 0, 0, 255);   // (the sticks' wells)
+    round_rect(dc, pxf(127), pxf(95), pxf(38), pxf(38), pxf(19), well0, well1, 0, 0, 255);
+    round_rect(dc, pxf(67), pxf(87), pxf(54), pxf(54), pxf(27), well0, well1, 0, 0, 255);   // (the d-pad's)
+    round_rect(dc, pxf(86), pxf(106), pxf(102) - pxf(86), pxf(122) - pxf(106), 0, RGB(0x2A, 0x6C, 0xCC),
+               RGB(0x0C, 0x34, 0x88), 0, 0, 255);  // (its middle)
+    for (int h = 0; h < NDRAWN; h++)
+        if (h < 4 || h > 7) pad_button(dc, h, TRUE);
+}
+
+static int pad_hit(int x, int y) {  // (client pixels) the controller button there, -1: none
+    float fx = x * 96.f / g_dpi, fy = y * 96.f / g_dpi;
+    static const int order[NDRAWN] = {0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 4, 5, 6, 7};  // (the top one first)
+    for (int k = 0; k < NDRAWN; k++) {
+        const PadShape *s = &k_pad[order[k]];
+        if (fx >= s->x && fx < s->x + s->w && fy >= s->y && fy < s->y + s->h) return order[k];
+    }
+    return -1;
+}
+
+static LRESULT CALLBACK padproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_CREATE: {
-        backdrop_make(&g_panel_bd, hwnd, px(PANEL_HEADER));
-        if (g_panel_bd.dc) {
-            SelectObject(g_panel_bd.dc, g_bold);
-            text(g_panel_bd.dc, L"Controller buttons", (RECT){px(20), px(6), px(PANEL_W - 20), px(32)},
-                 DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX, DEEP, NO_SHADOW);
-            SelectObject(g_panel_bd.dc, g_font);
-            text(g_panel_bd.dc,
-                 L"Pick the button on your controller for each of the game's buttons. Keyboard keys are set in the "
-                 L"game's menu (F1).",
-                 (RECT){px(20), px(32), px(PANEL_W - 20), px(54)}, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX, DEEP,
-                 NO_SHADOW);
-        }
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)&g_panel_bd);
-        for (int c = 0; c < 2; c++) {
-            add_label(hwnd, L"Game button", 20 + c * 400, 74, 118, 20, ROLE_HEAD, -1, g_semi);
-            add_label(hwnd, L"On your controller", 140 + c * 400, 74, 262, 20, ROLE_HEAD, -1, g_semi);
-        }
-        for (int k = 0; k < NSLOTS; k++) {
-            int i = k_panel_order[k], x = 20 + k / 8 * 400, y = 98 + k % 8 * 32;
-            add_label(hwnd, k_slot_names[i], x, y, 118, 24, ROLE_LABEL, -1, g_font);
-            g_pcombo[i] = add(hwnd, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, x + 120, y, 262, 380,
-                              ID_BIND0 + i, g_font);
-        }
-        add_label(hwnd, L"Presets", 20, 364, 60, 28, ROLE_LABEL, -1, g_font);
-        add_button(hwnd, L"Switch layout (original)", BS_PUSHBUTTON, 82, 364, 180, 28, ID_PRESET_SWITCH, ROLE_BUTTON);
-        add_button(hwnd, L"Swapped layout (A\x2194" L"B, X\x2194" L"Y)", BS_PUSHBUTTON, 270, 364, 206, 28,
-                   ID_PRESET_OTHER, ROLE_BUTTON);
-        g_pstatus = add_label(hwnd, L"", 494, 358, 308, 40, ROLE_NOTE, ID_PSTATUS, g_font);
-        add_label(hwnd, L"OK keeps these buttons; the launcher saves them when you press Play.", 20, 416, 560, 20,
-                  ROLE_NOTE, -1, g_font);
-        add_button(hwnd, L"OK", BS_DEFPUSHBUTTON, 614, 410, 92, 32, IDOK, ROLE_PRIMARY);
-        add_button(hwnd, L"Cancel", BS_PUSHBUTTON, 712, 410, 90, 32, IDCANCEL, ROLE_BUTTON);
-        panel_refresh(-1, 0);
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT r;
+        GetClientRect(hwnd, &r);
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bmp = CreateCompatibleBitmap(dc, r.right, r.bottom);
+        HGDIOBJ old = SelectObject(mem, bmp), oldf = SelectObject(mem, g_semi);
+        backdrop_blit(hwnd, mem, &r);
+        pad_draw(mem);
+        BitBlt(dc, 0, 0, r.right, r.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, oldf);
+        SelectObject(mem, old);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(hwnd, &ps);
         return 0;
     }
-    case WM_COMMAND: {
-        int id = LOWORD(wp);
-        if (id >= ID_BIND0 && id < ID_BIND0 + NSLOTS) {
-            int slot = id - ID_BIND0, h = (int)SendMessageW(g_pcombo[slot], CB_GETCURSEL, 0, 0);
-            if (HIWORD(wp) == CBN_SETFOCUS || HIWORD(wp) == CBN_DROPDOWN) pcombo_show(slot, TRUE);
-            else if (HIWORD(wp) == CBN_SELCHANGE && h >= 0 && h < NHOSTS &&
-                     SendMessageW(g_pcombo[slot], CB_GETCOUNT, 0, 0) == NHOSTS)
-                panel_refresh(bind_assign(g_pbind, slot, h), slot);
-        } else if (id == ID_PRESET_SWITCH || id == ID_PRESET_OTHER) {
-            memcpy(g_pbind, id == ID_PRESET_SWITCH ? g_def : g_other, sizeof g_pbind);
-            panel_refresh(-1, 0);
-        } else if (id == IDOK) {
-            memcpy(g_bind, g_pbind, sizeof g_bind);
-            sync_pad_combo();
-            panel_close(hwnd);
-        } else if (id == IDCANCEL) panel_close(hwnd);
+    case WM_MOUSEMOVE: {
+        int h = pad_hit((short)LOWORD(lp), (short)HIWORD(lp));
+        if (h != g_pad_hover) {
+            g_pad_hover = h;
+            InvalidateRect(hwnd, NULL, FALSE);
+            pad_hint();
+        }
+        TRACKMOUSEEVENT tme = {sizeof tme, TME_LEAVE, hwnd, 0};
+        TrackMouseEvent(&tme);
         return 0;
     }
-    case WM_CLOSE:
-        panel_close(hwnd);
+    case WM_MOUSELEAVE:
+        g_pad_hover = -1;
+        InvalidateRect(hwnd, NULL, FALSE);
+        pad_hint();
         return 0;
-    case WM_DESTROY:
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        backdrop_free(&g_panel_bd);
-        g_panel = NULL;
+    case WM_SETCURSOR: {
+        POINT p;
+        GetCursorPos(&p);
+        ScreenToClient(hwnd, &p);
+        SetCursor(LoadCursorW(NULL, pad_hit(p.x, p.y) >= 0 ? IDC_HAND : IDC_ARROW));
+        return TRUE;
+    }
+    case WM_LBUTTONDOWN: {  // the game button on it: its list, open
+        int h = pad_hit((short)LOWORD(lp), (short)HIWORD(lp));
+        for (int s = 0; s < NSLOTS && h >= 0; s++)
+            if (g_bind[s] == h) {
+                SetFocus(g_pcombo[s]);
+                SendMessageW(g_pcombo[s], CB_SHOWDROPDOWN, TRUE, 0);
+                break;
+            }
         return 0;
+    }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-static void open_panel(HWND owner) {
-    if (g_panel) {  // (already open: a command that reached the main window while it waits)
-        SetForegroundWindow(g_panel);
-        return;
+static void build_controls(HWND hwnd) {
+    add_label(hwnd,
+              L"Each of the game's buttons and the button on your controller it's on. Keyboard keys are set in the "
+              L"game's menu (F1).",
+              20, 182, 820, 20, ROLE_NOTE, -1, g_font);
+    for (int k = 0; k < 8; k++) {
+        int y = 212 + k * 31, l = k_col_left[k], r = k_col_right[k];
+        add_label(hwnd, k_slot_names[l], 20, y, 92, 24, ROLE_LABEL, -1, g_font);
+        g_pcombo[l] = add(hwnd, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 114, y, 190, 380,
+                          ID_BIND0 + l, g_font);
+        g_pcombo[r] = add(hwnd, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 556, y, 190, 380,
+                          ID_BIND0 + r, g_font);
+        add_label(hwnd, k_slot_names[r], 752, y, 92, 24, ROLE_LABEL, -1, g_font);
     }
-    memcpy(g_pbind, g_bind, sizeof g_pbind);
-    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN, ex = WS_EX_DLGMODALFRAME;
-    RECT r = {0, 0, px(PANEL_W), px(PANEL_H)}, o;
-    AdjustWindowRectExForDpi(&r, style, FALSE, ex, GetDpiForSystem());
-    int w = r.right - r.left, h = r.bottom - r.top;
-    GetWindowRect(owner, &o);
-    MONITORINFO mi = {.cbSize = sizeof mi};
-    GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &mi);
-    int x = (o.left + o.right - w) / 2, y = (o.top + o.bottom - h) / 2;
-    if (x + w > mi.rcWork.right) x = mi.rcWork.right - w;
-    if (y + h > mi.rcWork.bottom) y = mi.rcWork.bottom - h;
-    if (x < mi.rcWork.left) x = mi.rcWork.left;
-    if (y < mi.rcWork.top) y = mi.rcWork.top;
-    wchar_t caption[0x220];
-    swprintf(caption, 0x220, L"Controller buttons - %ls", g_title);
-    g_panel = CreateWindowExW(ex, L"DOAX3Buttons", caption, style, x, y, w, h, owner, NULL, GetModuleHandleW(NULL), NULL);
-    if (!g_panel) return;
-    EnableWindow(owner, FALSE);
-    ShowWindow(g_panel, SW_SHOW);
-    SetFocus(g_pcombo[0]);
-    MSG msg;
-    while (g_panel) {
-        int got = GetMessageW(&msg, NULL, 0, 0);
-        if (got <= 0) {  // (WM_QUIT: for the main loop)
-            if (!got) PostQuitMessage((int)msg.wParam);
-            panel_close(g_panel);
-            break;
+    g_pic = add(hwnd, L"DOAX3Pad", L"", 0, 310, 214, PAD_W, PAD_H, ID_PADPIC, g_font);
+    g_padhint = add_label(hwnd, L"", 310, 400, PAD_W, 54, ROLE_CENTER, ID_PADHINT, g_font);
+    add_label(hwnd, L"Templates", 20, 472, 84, 28, ROLE_LABEL, -1, g_font);
+    add_button(hwnd, k_pad_names[PAD_SWITCH], BS_PUSHBUTTON, 104, 472, 180, 28, ID_PRESET_SWITCH, ROLE_BUTTON);
+    add_button(hwnd, k_pad_names[PAD_OTHER], BS_PUSHBUTTON, 292, 472, 180, 28, ID_PRESET_OTHER, ROLE_BUTTON);
+    g_pstatus = add_label(hwnd, L"", 490, 466, 350, 54, ROLE_NOTE, ID_PSTATUS, g_font);
+}
+
+// ---- Mods tab: the mods, on or off; and each girl's body settings (the launcher's body.ini, over the mods')
+static HWND g_mod_cb, g_mod_on, g_mod_note, g_girl_cb, g_slider[NVAL], g_val[NVAL], g_size_like, g_phys, g_amount,
+    g_amount_val, g_body_note;
+static int g_phys_map[NGIRLS];  // (the Bust physics list's items after "Her own": k_girls indexes)
+
+static Mod *cur_mod(void) { return g_cur_mod >= 0 && g_cur_mod < g_nmod ? &g_mods[g_cur_mod] : NULL; }
+
+static void val_text(int k, float x, wchar_t *t, size_t n) {  // ("0.80", "150 %")
+    if (k_vals[k].pct) swprintf(t, n, L"%d %%", (int)(x * 100 + .5f));
+    else swprintf(t, n, L"%.2f", x);
+}
+
+static void body_text(const Body *b, wchar_t *t, size_t n) {  // ("Bust size 0.80, Arms 1.10, moves 70 % like ...")
+    int k = 0;
+    for (int i = 0; i < NVAL && k >= 0 && (size_t)k < n - 40; i++)
+        if (fabsf(b->v[i] - 1) > .004f) {
+            wchar_t v[16];
+            val_text(i, b->v[i], v, 16);
+            k += swprintf(t + k, n - k, L"%ls%ls %ls", k ? L", " : L"", k_vals[i].label, v);
         }
-        if (!IsDialogMessageW(g_panel, &msg)) TranslateMessage(&msg), DispatchMessageW(&msg);
+    if (b->phys >= 0 && k >= 0)
+        k += swprintf(t + k, n - k, L"%lsbreasts move %d %% like %hs's", k ? L", " : L"", (int)(b->amount * 100 + .5f),
+                      k_girls[b->phys].name);
+    if (!k) swprintf(t, n, L"as she is");
+}
+
+static void girl_label(int g, wchar_t *t, size_t n) {
+    Body base = body_of(g, FALSE);
+    swprintf(t, n, L"%hs%ls", k_girls[g].name,
+             body_any(&g_body[g]) ? L"  (set)" : body_not_default(&base) ? L"  (set by a mod)" : L"");
+}
+
+static void values_text(void) {  // the numbers beside the sliders
+    Body e = body_of(g_girl, TRUE);
+    wchar_t t[32];
+    for (int k = 0; k < NVAL; k++) {
+        val_text(k, e.v[k], t, 32);
+        SetWindowTextW(g_val[k], t);
+        InvalidateRect(g_val[k], NULL, FALSE);
     }
-    SetFocus(GetDlgItem(owner, ID_PADEDIT));
+    swprintf(t, 32, L"%d %%", (int)(e.amount * 100 + .5f));
+    SetWindowTextW(g_amount_val, t);
+    InvalidateRect(g_amount_val, NULL, FALSE);
+}
+
+static void body_note(void) {  // what she gets, and the mods that set her too
+    wchar_t t[1400], b[600];
+    Body e = body_of(g_girl, TRUE);
+    body_text(&e, b, 600);
+    int n = swprintf(t, 1400, L"In the game: %hs %ls.", k_girls[g_girl].name, b);
+    for (int i = 0; i < g_nmod && n > 0 && n < 1000; i++) {
+        const Mod *m = &g_mods[i];
+        if (!m->on || !body_any(&m->body[g_girl])) continue;
+        n += swprintf(t + n, 1400 - n, L" The mod %ls sets her too%ls.", m->name,
+                      body_any(&g_body[g_girl]) ? L"; the settings here win" : L"");
+    }
+    if (n > 0)
+        swprintf(t + n, 1400 - n, L" Jiggle: how lively the soft parts are (a bigger part swings further on its own). "
+                                  L"Arms, thighs, calves, waist: thickness. Bust weight: heavier hangs lower, toward the ground. Breasts meet: a bigger bust's two sides push each other apart, 0 % passes through. Saved "
+                                  L"in body.ini beside larecomp.ini by Save "
+                                  L"or Play.");
+    SetWindowTextW(g_body_note, t);
+    InvalidateRect(g_body_note, NULL, FALSE);
+}
+
+static void girl_refresh(void) {  // the body controls from what g_girl gets
+    wchar_t t[128];
+    SendMessageW(g_girl_cb, CB_RESETCONTENT, 0, 0);
+    for (int g = 0; g < NGIRLS; g++) {
+        girl_label(g, t, 128);
+        SendMessageW(g_girl_cb, CB_ADDSTRING, 0, (LPARAM)t);
+    }
+    SendMessageW(g_girl_cb, CB_SETCURSEL, g_girl, 0);
+    Body e = body_of(g_girl, TRUE);
+    for (int k = 0; k < NVAL; k++) {
+        SendMessageW(g_slider[k], TBM_SETPOS, TRUE, (LPARAM)(e.v[k] * 100 + .5f));
+        InvalidateRect(g_slider[k], NULL, FALSE);
+    }
+    SendMessageW(g_size_like, CB_RESETCONTENT, 0, 0);
+    SendMessageW(g_size_like, CB_ADDSTRING, 0, (LPARAM)L"Pick a girl...");
+    for (int g = 0; g < NGIRLS; g++) {  // (her size on this girl's body)
+        swprintf(t, 128, L"%hs: %.2f", k_girls[g].name, k_girls[g].bust / k_girls[g_girl].bust);
+        SendMessageW(g_size_like, CB_ADDSTRING, 0, (LPARAM)t);
+    }
+    SendMessageW(g_size_like, CB_SETCURSEL, 0, 0);
+    SendMessageW(g_phys, CB_RESETCONTENT, 0, 0);
+    SendMessageW(g_phys, CB_ADDSTRING, 0, (LPARAM)L"Her own");
+    int n = 0, sel = 0;
+    for (int g = 0; g < NGIRLS; g++) {
+        if (g == g_girl) continue;
+        swprintf(t, 128, L"Like %hs's%ls", k_girls[g].name, g == CALMEST ? L" (the calmest)" : L"");
+        SendMessageW(g_phys, CB_ADDSTRING, 0, (LPARAM)t);
+        if (e.phys == g) sel = n + 1;
+        g_phys_map[n++] = g;
+    }
+    SendMessageW(g_phys, CB_SETCURSEL, sel, 0);
+    SendMessageW(g_amount, TBM_SETPOS, TRUE, (LPARAM)(e.amount * 100 + .5f));
+    EnableWindow(g_amount, e.phys >= 0);
+    EnableWindow(g_amount_val, e.phys >= 0);
+    InvalidateRect(g_amount, NULL, FALSE);
+    values_text();
+    body_note();
+}
+
+static void mod_refresh(void) {
+    Mod *m = cur_mod();
+    size_t cap = MAX_PATH + 512;
+    wchar_t t[MAX_PATH + 512];
+    SendMessageW(g_mod_cb, CB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < g_nmod; i++) {
+        swprintf(t, cap, L"%ls%ls", g_mods[i].name, g_mods[i].on ? L"" : L"  (off)");
+        SendMessageW(g_mod_cb, CB_ADDSTRING, 0, (LPARAM)t);
+    }
+    if (!g_nmod) SendMessageW(g_mod_cb, CB_ADDSTRING, 0, (LPARAM)L"(no mods in the mods folder)");
+    SendMessageW(g_mod_cb, CB_SETCURSEL, m ? g_cur_mod : 0, 0);
+    EnableWindow(g_mod_cb, m != NULL);
+    EnableWindow(g_mod_on, m != NULL);
+    SendMessageW(g_mod_on, BM_SETCHECK, m && m->on ? BST_CHECKED : BST_UNCHECKED, 0);
+    InvalidateRect(g_mod_on, NULL, FALSE);
+    int n = 0, any = 0;
+    if (!m) n = swprintf(t, cap, L"Mods go in %ls\\mods (docs/MODDING.md).", g_root);
+    else {
+        for (int g = 0; g < NGIRLS && n >= 0; g++)
+            if (m->changes[g]) n += swprintf(t + n, cap - n, L"%ls%hs", any++ ? L", " : L"Its files change ", k_girls[g].name);
+        if (n >= 0) n += swprintf(t + n, cap - n, any ? L"." : L"It changes no girl's files.");
+        for (int g = 0, k = 0; g < NGIRLS && n > 0; g++)
+            if (body_any(&m->body[g]))
+                n += swprintf(t + n, cap - n, L"%ls%hs", k++ ? L", " : L" Its body.ini sets ", k_girls[g].name);
+        if (n > 0 && wcsstr(t, L"body.ini sets")) n += swprintf(t + n, cap - n, L".");
+        if (!m->on && n > 0) swprintf(t + n, cap - n, L" Off: the game doesn't load it.");
+    }
+    SetWindowTextW(g_mod_note, t);
+    InvalidateRect(g_mod_note, NULL, FALSE);
+    girl_refresh();  // (a mod on or off changes what the girls get)
+}
+
+static void body_changed(void) {  // (a body control moved)
+    wchar_t t[128];
+    girl_label(g_girl, t, 128);
+    SendMessageW(g_girl_cb, CB_DELETESTRING, g_girl, 0);
+    SendMessageW(g_girl_cb, CB_INSERTSTRING, g_girl, (LPARAM)t);
+    SendMessageW(g_girl_cb, CB_SETCURSEL, g_girl, 0);
+    Body e = body_of(g_girl, TRUE);
+    EnableWindow(g_amount, e.phys >= 0);
+    EnableWindow(g_amount_val, e.phys >= 0);
+    InvalidateRect(g_amount, NULL, FALSE);
+    values_text();
+    body_note();
+}
+
+static void add_value_row(HWND hwnd, int k, int x, int y) {  // (a label, a slider, its number)
+    add_label(hwnd, k_vals[k].label, x, y + 2, 126, 24, ROLE_LABEL, -1, g_font);
+    g_slider[k] = add_slider(hwnd, x + 126, y, 194, ID_VAL0 + k, (int)(k_vals[k].lo * 100 + .5f),
+                             (int)(k_vals[k].hi * 100 + .5f), 5);
+    g_val[k] = add_label(hwnd, L"", x + 326, y + 2, 74, 24, ROLE_VALUE, ID_VALTXT0 + k, g_font);
+}
+
+static void build_mods(HWND hwnd) {
+    g_mod_cb = add_combo(hwnd, L"Mod", 20, 182, ID_MOD, 264);
+    g_mod_on = add_button(hwnd, L"On (the game loads it)", BS_AUTOCHECKBOX, 436, 183, 180, 22, ID_MOD_ON, ROLE_CHECK);
+    add_button(hwnd, L"Open folder", BS_PUSHBUTTON, 740, 180, 100, 28, ID_MOD_OPEN, ROLE_BUTTON);
+    g_mod_note = add_label(hwnd, L"", 156, 210, 684, 34, ROLE_NOTE, ID_MOD_NOTE, g_font);
+    add_label(hwnd, L"Body settings", 20, 252, 130, 24, ROLE_HEAD, -1, g_semi);
+    g_girl_cb = add(hwnd, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 156, 252, 264, 300, ID_GIRL,
+                    g_font);
+    add_button(hwnd, L"As she is", BS_PUSHBUTTON, 436, 250, 100, 28, ID_GIRL_RESET, ROLE_BUTTON);
+    add_label(hwnd, L"each girl's, whatever mods are on", 548, 254, 292, 22, ROLE_NOTE, -1, g_font);
+    // (left: the bust; right: the rest)
+    add_value_row(hwnd, K_BUST, 20, 290);
+    add_value_row(hwnd, K_BUST_JIG, 20, 322);
+    g_size_like = add_combo(hwnd, L"Size like", 20, 356, ID_SIZE_LIKE, 264);
+    add_label(hwnd, L"Bust physics", 20, 390, 132, 24, ROLE_LABEL, -1, g_font);
+    g_phys = add(hwnd, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 156, 390, 264, 300, ID_PHYS, g_font);
+    add_label(hwnd, L"How much like hers", 20, 424, 126, 24, ROLE_LABEL, -1, g_font);
+    g_amount = add_slider(hwnd, 146, 422, 194, ID_AMOUNT, 0, 100, 10);
+    g_amount_val = add_label(hwnd, L"", 346, 424, 74, 24, ROLE_VALUE, ID_AMOUNT_VAL, g_font);
+    for (int k = K_BUTT; k < NVAL; k++) add_value_row(hwnd, k, 440, 290 + (k - K_BUTT) * 28);
+    g_body_note = add_label(hwnd, L"", 20, 456, 400, 88, ROLE_NOTE, ID_BODY_NOTE, g_font);
+    // (first: a mod that's on, and the first girl one changes)
+    g_cur_mod = g_nmod ? 0 : -1;
+    for (int i = g_nmod - 1; i >= 0; i--)
+        if (g_mods[i].on) g_cur_mod = i;
+    for (int i = 0, found = 0; i < g_nmod && !found; i++)
+        for (int g = 0; g < NGIRLS && !found; g++)
+            if (g_mods[i].on && g_mods[i].changes[g]) g_girl = g, found = 1;
+    mod_refresh();
+}
+
+static void build_game(HWND hwnd) {
+    int y = 208, step = 34, cw = 264;
+    add_label(hwnd, L"Display", 20, 180, 300, 22, ROLE_HEAD, -1, g_semi);
+    add_label(hwnd, L"Frame rate and graphics", 440, 180, 300, 22, ROLE_HEAD, -1, g_semi);
+    g_mode = add_combo(hwnd, L"Display mode", 20, y, ID_MODE, cw);
+    for (int i = 0; i < 3; i++) SendMessageW(g_mode, CB_ADDSTRING, 0, (LPARAM)k_modes[i]);
+    g_res = add_combo(hwnd, L"Resolution", 20, y + step, ID_RES, cw);
+    for (int i = 0; i < g_nsizes; i++) {
+        wchar_t t[48];
+        swprintf(t, 48, L"%d x %d%ls", g_sizes[i].w, g_sizes[i].h,
+                 g_sizes[i].w == g_desk_w && g_sizes[i].h == g_desk_h ? L" (desktop)" : L"");
+        SendMessageW(g_res, CB_ADDSTRING, 0, (LPARAM)t);
+    }
+    g_r3d = add_combo(hwnd, L"3D resolution", 20, y + 2 * step, ID_R3D, cw);
+    for (int i = 0; i < 5; i++) SendMessageW(g_r3d, CB_ADDSTRING, 0, (LPARAM)k_r3d_names[i]);
+    g_ups = add_combo(hwnd, L"Upscaler", 20, y + 3 * step, ID_UPS, cw);
+    for (int i = 0; i < 3; i++) SendMessageW(g_ups, CB_ADDSTRING, 0, (LPARAM)k_ups_names[i]);
+    g_note = add_label(hwnd, L"", 156, y + 4 * step, cw, 40, ROLE_NOTE, ID_NOTE, g_font);
+    g_fps = add_combo(hwnd, L"Frame rate", 440, y, ID_FPS, cw);
+    for (int i = 0; i < 3; i++) SendMessageW(g_fps, CB_ADDSTRING, 0, (LPARAM)k_fps_names[i]);
+    g_fpshint = add_label(hwnd, L"", 576, y + 27, cw, 50, ROLE_FPS, ID_FPSHINT, g_font);
+    COMBOBOXINFO cbi = {.cbSize = sizeof cbi};
+    if (GetComboBoxInfo(g_fps, &cbi) && cbi.hwndList)
+        g_fps_list_proc = (WNDPROC)SetWindowLongPtrW(cbi.hwndList, GWLP_WNDPROC, (LONG_PTR)fps_list_proc);
+    HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                               CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL,
+                               GetModuleHandleW(NULL), NULL);
+    if (tip) {  // (the whole story, when the pointer rests on the Frame rate box)
+        TTTOOLINFOW ti = {.cbSize = TTTOOLINFOW_V2_SIZE, .uFlags = TTF_IDISHWND | TTF_SUBCLASS, .hwnd = hwnd,
+                          .uId = (UINT_PTR)g_fps, .lpszText = (LPWSTR)k_fps_tip};
+        SendMessageW(tip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+        SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, px(360));
+        SendMessageW(tip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 30000);
+    }
+    g_aa = add_combo(hwnd, L"Anti-aliasing", 440, y + 78, ID_AA, cw);
+    for (int i = 0; i < 2; i++) SendMessageW(g_aa, CB_ADDSTRING, 0, (LPARAM)k_aa_names[i]);
+    g_af = add_combo(hwnd, L"Texture filtering", 440, y + 78 + step, ID_AF, cw);
+    for (int i = 0; i < 5; i++) SendMessageW(g_af, CB_ADDSTRING, 0, (LPARAM)k_af_names[i]);
+    g_showfps = add_button(hwnd, L"Show FPS (the frame rate in a corner)", BS_AUTOCHECKBOX, 576, y + 78 + 2 * step + 4,
+                           cw, 22, ID_SHOWFPS, ROLE_CHECK);
+    g_bgin = add_button(hwnd, L"Controller works in the background", BS_AUTOCHECKBOX, 576, y + 78 + 2 * step + 30, cw,
+                        22, ID_BGIN, ROLE_CHECK);
 }
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1022,74 +1820,119 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         backdrop_make(&g_main_bd, hwnd, px(MAIN_HEADER));
         paint_main_header(&g_main_bd);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)&g_main_bd);
-        int y = MAIN_HEADER + 24, step = 34, cw = MAIN_W - 180;
-        g_mode = add_combo(hwnd, L"Display mode", y, ID_MODE, cw);
-        for (int i = 0; i < 3; i++) SendMessageW(g_mode, CB_ADDSTRING, 0, (LPARAM)k_modes[i]);
-        g_res = add_combo(hwnd, L"Resolution", y += step, ID_RES, cw);
-        for (int i = 0; i < g_nsizes; i++) {
-            wchar_t t[48];
-            swprintf(t, 48, L"%d x %d%ls", g_sizes[i].w, g_sizes[i].h,
-                     g_sizes[i].w == g_desk_w && g_sizes[i].h == g_desk_h ? L" (desktop)" : L"");
-            SendMessageW(g_res, CB_ADDSTRING, 0, (LPARAM)t);
-        }
-        g_r3d = add_combo(hwnd, L"3D resolution", y += step, ID_R3D, cw);
-        for (int i = 0; i < 5; i++) SendMessageW(g_r3d, CB_ADDSTRING, 0, (LPARAM)k_r3d_names[i]);
-        g_pad = add_combo(hwnd, L"Controls", y += step, ID_PAD, cw - 94);
-        for (int i = 0; i < 2; i++) SendMessageW(g_pad, CB_ADDSTRING, 0, (LPARAM)k_pad_names[i]);
-        add_button(hwnd, L"Customize...", BS_PUSHBUTTON, MAIN_W - 20 - 88, y, 88, 24, ID_PADEDIT, ROLE_BUTTON);
-        g_fps = add_combo(hwnd, L"Frame rate", y += step, ID_FPS, cw);
-        for (int i = 0; i < 3; i++) SendMessageW(g_fps, CB_ADDSTRING, 0, (LPARAM)k_fps_names[i]);
-        g_fpshint = add_label(hwnd, L"", 160, y + 27, cw, 34, ROLE_FPS, ID_FPSHINT, g_font);
-        y += 36;
-        COMBOBOXINFO cbi = {.cbSize = sizeof cbi};
-        if (GetComboBoxInfo(g_fps, &cbi) && cbi.hwndList)
-            g_fps_list_proc = (WNDPROC)SetWindowLongPtrW(cbi.hwndList, GWLP_WNDPROC, (LONG_PTR)fps_list_proc);
-        HWND tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
-                                   CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL,
-                                   GetModuleHandleW(NULL), NULL);
-        if (tip) {  // (the whole story, when the pointer rests on the Frame rate box)
-            TTTOOLINFOW ti = {.cbSize = TTTOOLINFOW_V2_SIZE, .uFlags = TTF_IDISHWND | TTF_SUBCLASS, .hwnd = hwnd,
-                              .uId = (UINT_PTR)g_fps, .lpszText = (LPWSTR)k_fps_tip};
-            SendMessageW(tip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-            SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, px(360));
-            SendMessageW(tip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 30000);
-        }
-        g_aa = add_combo(hwnd, L"Anti-aliasing", y += step, ID_AA, cw);
-        for (int i = 0; i < 2; i++) SendMessageW(g_aa, CB_ADDSTRING, 0, (LPARAM)k_aa_names[i]);
-        g_af = add_combo(hwnd, L"Texture filtering", y += step, ID_AF, cw);
-        for (int i = 0; i < 5; i++) SendMessageW(g_af, CB_ADDSTRING, 0, (LPARAM)k_af_names[i]);
-        g_ups = add_combo(hwnd, L"Upscaler", y += step, ID_UPS, cw);
-        for (int i = 0; i < 3; i++) SendMessageW(g_ups, CB_ADDSTRING, 0, (LPARAM)k_ups_names[i]);
-        y += step + 2;
-        g_showfps = add_button(hwnd, L"Show FPS (the frame rate in a corner)", BS_AUTOCHECKBOX, 160, y, cw, 22,
-                               ID_SHOWFPS, ROLE_CHECK);
-        g_bgin = add_button(hwnd, L"Controller works in the background", BS_AUTOCHECKBOX, 160, y + 26, cw, 22, ID_BGIN,
-                            ROLE_CHECK);
-        g_note = add_label(hwnd, L"", 20, MAIN_H - 80, MAIN_W - 40, 20, ROLE_NOTE, ID_NOTE, g_font);
+        for (int t = 0; t < NTABS; t++)
+            g_tabs[t] = role(add(hwnd, L"BUTTON", k_tab_names[t], BS_PUSHBUTTON | WS_TABSTOP, 20 + t * 112, TAB_Y, 104,
+                                 30, ID_TAB0 + t, g_semi),
+                             ROLE_TAB);
+        g_build_tab = TAB_GAME;
+        build_game(hwnd);
+        g_build_tab = TAB_CONTROLS;
+        build_controls(hwnd);
+        g_build_tab = TAB_MODS;
+        build_mods(hwnd);
+        g_build_tab = -1;
+        add_label(hwnd, L"Save keeps your choices; Play saves them too and starts the game.", 20, MAIN_H - 44, 540, 20,
+                  ROLE_NOTE, ID_SAVENOTE, g_font);
+        add_button(hwnd, L"Save", BS_PUSHBUTTON, MAIN_W - 20 - 88 - 8 - 88 - 8 - 88, MAIN_H - 50, 88, 32, ID_SAVE,
+                   ROLE_BUTTON);
         add_button(hwnd, L"Play", BS_DEFPUSHBUTTON, MAIN_W - 20 - 88 - 8 - 88, MAIN_H - 50, 88, 32, IDOK, ROLE_PRIMARY);
         add_button(hwnd, L"Quit", BS_PUSHBUTTON, MAIN_W - 20 - 88, MAIN_H - 50, 88, 32, IDCANCEL, ROLE_BUTTON);
         load_choices();
+        controls_refresh(-1, 0);
         set_fps_hint((int)SendMessageW(g_fps, CB_GETCURSEL, 0, 0));
+        show_tab(TAB_GAME);
         SetFocus(GetDlgItem(hwnd, IDOK));
         return 0;
     }
-    case WM_COMMAND:
-        if (LOWORD(wp) == ID_MODE && HIWORD(wp) == CBN_SELCHANGE) update_note();
-        else if (LOWORD(wp) == ID_FPS && (HIWORD(wp) == CBN_SELCHANGE || HIWORD(wp) == CBN_CLOSEUP))
+    case WM_HSCROLL: {  // (the Mods tab's sliders)
+        HWND s = (HWND)lp;
+        int key = s == g_amount ? K_AMOUNT : -1;
+        for (int k = 0; k < NVAL; k++)
+            if (s == g_slider[k]) key = k;
+        if (key < 0) return 0;
+        float x = (int)SendMessageW(s, TBM_GETPOS, 0, 0) / 100.f;
+        Body e = body_of(g_girl, TRUE);
+        if (fabsf((key == K_AMOUNT ? e.amount : e.v[key]) - x) > .001f) {
+            body_put(g_girl, key, x, 0);
+            body_changed();
+        }
+        InvalidateRect(s, NULL, FALSE);
+        return 0;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wp), code = HIWORD(wp);
+        if (id >= ID_TAB0 && id < ID_TAB0 + NTABS) show_tab(id - ID_TAB0);
+        else if (id == ID_MODE && code == CBN_SELCHANGE) update_note();
+        else if (id == ID_FPS && (code == CBN_SELCHANGE || code == CBN_CLOSEUP))
             set_fps_hint((int)SendMessageW(g_fps, CB_GETCURSEL, 0, 0));
-        else if (LOWORD(wp) == ID_PAD && HIWORD(wp) == CBN_SELCHANGE) {
-            int sel = (int)SendMessageW(g_pad, CB_GETCURSEL, 0, 0);
-            memcpy(g_bind, sel == PAD_SWITCH ? g_def : sel == PAD_OTHER ? g_other : g_custom, sizeof g_bind);
-        } else if (LOWORD(wp) == ID_PADEDIT) open_panel(hwnd);
-        else if (LOWORD(wp) == IDOK) {
+        else if (id >= ID_BIND0 && id < ID_BIND0 + NSLOTS) {
+            int slot = id - ID_BIND0, h = (int)SendMessageW(g_pcombo[slot], CB_GETCURSEL, 0, 0);
+            if (code == CBN_SETFOCUS || code == CBN_DROPDOWN) {
+                pcombo_show(slot, TRUE);
+                if (g_focus_slot != slot) g_focus_slot = slot, InvalidateRect(g_pic, NULL, FALSE);
+            } else if (code == CBN_KILLFOCUS) {
+                if (g_focus_slot == slot) g_focus_slot = -1, InvalidateRect(g_pic, NULL, FALSE);
+            } else if (code == CBN_SELCHANGE && h >= 0 && h < NHOSTS &&
+                       SendMessageW(g_pcombo[slot], CB_GETCOUNT, 0, 0) == NHOSTS)
+                controls_refresh(bind_assign(g_bind, slot, h), slot);
+        } else if (id == ID_PRESET_SWITCH || id == ID_PRESET_OTHER) {
+            memcpy(g_bind, id == ID_PRESET_SWITCH ? g_def : g_other, sizeof g_bind);
+            controls_refresh(-1, 0);
+        } else if (id == ID_MOD && code == CBN_SELCHANGE) {
+            int i = (int)SendMessageW(g_mod_cb, CB_GETCURSEL, 0, 0);
+            if (i >= 0 && i < g_nmod && i != g_cur_mod) g_cur_mod = i, mod_refresh();
+        } else if (id == ID_MOD_ON && code == BN_CLICKED && cur_mod()) {
+            cur_mod()->on = SendMessageW(g_mod_on, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            mod_refresh();
+        } else if (id == ID_MOD_OPEN) {
+            wchar_t p[MAX_PATH];
+            Mod *m = cur_mod();
+            if (m) mod_folder(m, m->was_on, p);
+            else {
+                swprintf(p, MAX_PATH, L"%ls\\mods", g_root);
+                CreateDirectoryW(p, NULL);
+            }
+            ShellExecuteW(hwnd, L"open", p, NULL, NULL, SW_SHOWNORMAL);
+        } else if (id == ID_GIRL && code == CBN_SELCHANGE) {
+            int g = (int)SendMessageW(g_girl_cb, CB_GETCURSEL, 0, 0);
+            if (g >= 0 && g < NGIRLS) g_girl = g, girl_refresh();
+        } else if (id == ID_SIZE_LIKE && code == CBN_SELCHANGE) {
+            int g = (int)SendMessageW(g_size_like, CB_GETCURSEL, 0, 0) - 1;
+            if (g >= 0 && g < NGIRLS) {
+                float v = roundf(k_girls[g].bust / k_girls[g_girl].bust * 100) / 100;
+                body_put(g_girl, K_BUST, v < .3f ? .3f : v > 2.5f ? 2.5f : v, 0);
+                SendMessageW(g_slider[K_BUST], TBM_SETPOS, TRUE, (LPARAM)(body_of(g_girl, TRUE).v[K_BUST] * 100 + .5f));
+                InvalidateRect(g_slider[K_BUST], NULL, FALSE);
+                body_changed();
+            }
+        } else if (id == ID_PHYS && code == CBN_SELCHANGE) {
+            int i = (int)SendMessageW(g_phys, CB_GETCURSEL, 0, 0);
+            body_put(g_girl, K_PHYS, 0, i > 0 && i <= NGIRLS - 1 ? g_phys_map[i - 1] : -1);
+            body_changed();
+        } else if (id == ID_GIRL_RESET) {  // (as the game has her: over a mod's settings too)
+            for (int k = 0; k < NKEYS; k++) body_put(g_girl, k, 1, -1);
+            girl_refresh();
+        } else if (id == IDOK || id == ID_SAVE) {  // (Save: everything, without starting the game)
             wchar_t err[512];
             if (!save_choices()) {
                 swprintf(err, 512, L"Couldn't write %ls.", g_ini);
                 MessageBoxW(hwnd, err, g_title, MB_ICONERROR);
+            } else if (!mods_save(err, 512)) {
+                MessageBoxW(hwnd, err, g_title, MB_ICONERROR);
+                mod_refresh();
+            } else if (id == ID_SAVE) {
+                SYSTEMTIME t;
+                GetLocalTime(&t);
+                swprintf(err, 512, L"Saved at %02d:%02d:%02d. Play starts the game with these.", t.wHour, t.wMinute,
+                         t.wSecond);
+                SetWindowTextW(GetDlgItem(hwnd, ID_SAVENOTE), err);
+                InvalidateRect(GetDlgItem(hwnd, ID_SAVENOTE), NULL, FALSE);
+                mod_refresh();  // (a mod turned on or off is renamed now)
             } else if (!launch(err, 512, NULL)) MessageBoxW(hwnd, err, g_title, MB_ICONERROR);
             else DestroyWindow(hwnd);
-        } else if (LOWORD(wp) == IDCANCEL) DestroyWindow(hwnd);
+        } else if (id == IDCANCEL) DestroyWindow(hwnd);
         return 0;
+    }
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -1117,6 +1960,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show) {
     load_sizes();
     ini_load();
     init_binds();
+    mods_load();
     g_dpi = (int)GetDpiForSystem();
     wchar_t dpi[16];  // (DOAX3_LAUNCHER_DPI=144: laid out as at 150% scaling, to check the layout without changing it)
     if (GetEnvironmentVariableW(L"DOAX3_LAUNCHER_DPI", dpi, 16) && _wtoi(dpi) >= 96 && _wtoi(dpi) <= 480)
@@ -1134,7 +1978,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show) {
     WNDCLASSW wc = {.lpfnWndProc = wndproc, .hInstance = inst, .lpszClassName = L"DOAX3Launcher",
                     .hCursor = LoadCursorW(NULL, IDC_ARROW), .hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1))};
     RegisterClassW(&wc);
-    wc.lpfnWndProc = panelproc, wc.lpszClassName = L"DOAX3Buttons";
+    wc.lpfnWndProc = padproc, wc.lpszClassName = L"DOAX3Pad", wc.hIcon = NULL;
+    RegisterClassW(&wc);
+    wc.lpfnWndProc = sliderproc, wc.lpszClassName = L"DOAX3Slider", wc.cbWndExtra = sizeof(void *);
     RegisterClassW(&wc);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     RECT r = {0, 0, px(MAIN_W), px(MAIN_H)};
@@ -1146,7 +1992,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show) {
                                 (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h, NULL, NULL, inst, NULL);
     ShowWindow(hwnd, show);
     MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0) > 0)
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_TAB && GetKeyState(VK_CONTROL) < 0) {  // (Ctrl+Tab: next tab)
+            show_tab((g_tab + (GetKeyState(VK_SHIFT) < 0 ? NTABS - 1 : 1)) % NTABS);
+            continue;
+        }
         if (!IsDialogMessageW(hwnd, &msg)) TranslateMessage(&msg), DispatchMessageW(&msg);
+    }
+    backdrop_free(&g_main_bd);
     return 0;
 }
