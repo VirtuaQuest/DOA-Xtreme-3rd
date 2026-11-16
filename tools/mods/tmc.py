@@ -1190,7 +1190,12 @@ def move_bones(model, pos):
             continue
         struct.pack_into('<3f', d, g + 0x30, *model.local[nodes[0]][12:15])
         for k, n in enumerate(nodes[1:], 1):
-            struct.pack_into('<3f', d, nrec + k * 0xa0 + 0x30, *model.local[n][12:15])
+            # (a node's place from the previous node of its chain, in that node's frame: its local translation where
+            #  the chain's bones are parent and child, as in Momiji's ponytail; where they all hang from one root, as
+            #  in her hair_03, not - writing the local one there broke the physics' rest pose and the hair flew)
+            pw = model.world[nodes[k - 1]]
+            rel = xf_dir([model.world[n][12 + i] - pw[12 + i] for i in range(3)], mat_inverse(pw))
+            struct.pack_into('<3f', d, nrec + k * 0xa0 + 0x30, *rel)
         nl = struct.unpack_from('<I', d, lb + 0x14)[0]
         lrec = lb + struct.unpack_from('<I', d, lb + 0x20)[0]
         for k in range(nl):

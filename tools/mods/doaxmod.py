@@ -470,6 +470,52 @@ def model_paths(game, target):
     return tmc_p, tmcl_p
 
 
+def cmd_skeleton(a):
+    """A model's node tree: each node's parent and bind-pose position (metres, the model's axes: x her left, y up, z
+    forward, the hips at the origin), its kind (MOT: animated body bones, OPT: helpers, face and physics bones, WGT: a
+    mesh object's node, XTR: attachment points), and with --objects which bones each mesh object is skinned to.
+    --json OUT: the same as data (names, parents, local and world matrices as row vectors, objects' palettes)."""
+    import tmc
+    if os.path.isfile(a.target):
+        tmc_p = a.target
+        m = tmc.Model(open(tmc_p, 'rb').read(), open(tmc_p.replace('_TMC.tmc', '_TMCL.tmcl'), 'rb').read())
+    else:
+        game = Game()
+        tmc_p, tmcl_p = model_paths(game, a.target)
+        m = tmc.Model(game.read(tmc_p), game.read(tmcl_p))
+    kids = {}
+    for i, p in enumerate(m.parent):
+        kids.setdefault(p, []).append(i)
+    rows = []
+
+    def walk(i, depth):
+        rows.append((i, depth))
+        for k in kids.get(i, []):
+            walk(k, depth + 1)
+    for r in kids.get(-1, []):
+        walk(r, 0)
+    flt = (a.filter or '').lower()
+    for i, depth in rows:
+        nm = m.node_names[i]
+        if flt and flt not in nm.lower():
+            continue
+        w = m.world[i]
+        print(f'{"  " * depth}{nm:<{max(1, 44 - 2 * depth)}} ({w[12]:+.4f}, {w[13]:+.4f}, {w[14]:+.4f})  #{i}')
+    phys = 'ACSCLS' in m.chunks
+    print(f'{len(m.node_names)} nodes; {len(m.objects)} mesh objects; accessory physics (ACSCLS): {"yes" if phys else "no"}')
+    if a.objects:
+        for o in m.objects:
+            print(f'object {o.index} {o.name}: node {m.node_names[o.node]}, {len(o.submeshes)} submeshes, '
+                  f'{len(o.palette)} bones: ' + ' '.join(m.node_names[n] for n in o.palette))
+    if a.json:
+        import json
+        json.dump({'model': tmc_p, 'nodes': [{'name': m.node_names[i], 'parent': m.parent[i], 'local': m.local[i],
+                                              'world': m.world[i]} for i in range(len(m.node_names))],
+                   'objects': [{'name': o.name, 'node': o.node, 'palette': o.palette} for o in m.objects],
+                   'physics': phys}, open(a.json, 'w'), indent=1)
+        print('wrote', a.json)
+
+
 def cmd_model_export(a):
     import tmc
     game = Game()
@@ -699,6 +745,9 @@ def main():
                         'weights or with other bones)')
     p.set_defaults(fn=cmd_model_import)
     p = sub.add_parser('tmc-info'); p.add_argument('file'); p.set_defaults(fn=cmd_tmc_info)
+    p = sub.add_parser('skeleton'); p.add_argument('target'); p.add_argument('--objects', action='store_true')
+    p.add_argument('--filter', help='only nodes whose name contains this'); p.add_argument('--json')
+    p.set_defaults(fn=cmd_skeleton)
     p = sub.add_parser('check'); p.add_argument('mod'); p.set_defaults(fn=cmd_check)
     a = ap.parse_args()
     return a.fn(a) or 0

@@ -58,6 +58,7 @@ Run it from the repo root with the project's Python:
 | `swap-look TARGET SOURCE MOD` | TARGET gets SOURCE's face, hairstyles and body skin |
 | `copy SRC DST MOD` | Put game file SRC into the mod in place of game file DST |
 | `tmc-info FILE\|PATH` | The chunk tree of a model (for format work) |
+| `skeleton PATH [--objects] [--json OUT]` | A model's bones: tree, bind-pose positions, which bones each mesh is skinned to ([CHARACTER_MODELS.md](CHARACTER_MODELS.md)) |
 | `check MOD` | Check a mod: every file is one of the game's, voice banks are valid, sound banks aren't too big |
 
 Images and audio can be in any common format; the tool converts and resizes them with ffmpeg (part of the MSYS2
@@ -332,6 +333,9 @@ Then build the mod:
 The subtitles stay the original's.
 
 ## What a girl is made of
+
+How the parts are rigged and fit together (the skeleton, the face rig, how the face and hair follow the body, physics,
+animation, and a checklist for another character): [CHARACTER_MODELS.md](CHARACTER_MODELS.md).
 
 `doaxmod.py girl-files <GIRL>` lists all of it. For Kasumi (`KAS`):
 
