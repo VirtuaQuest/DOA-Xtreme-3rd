@@ -352,7 +352,7 @@ can be changed without new models.
 | Thighs, Thigh jiggle | `thigh_size`, `thigh_jiggle` | Thickness, and how lively the thighs' soft part is | 0.70 to 2.00, 0 to 200 % |
 | Arms, Calves, Waist | `arm_size`, `calf_size`, `waist_size` | Thickness (calves: below the knee) | 0.70 to 2.00 (waist 1.80) |
 | Bust weight | `bust_weight` | How heavy her breasts are: heavier ones hang lower along gravity, however she stands or bends; lighter ones sit higher | 50 to 300 % |
-| Breasts meet | `bust_contact` | With a bigger or heavier bust, the two breasts push each other apart where they meet, instead of passing through each other (0 %: as before) | 0 to 100 % |
+| Bust contact | `bust_contact` | With a bigger or heavier bust, the breasts give way to her arms and push each other apart, instead of passing through (0 %: as before) | 0 to 100 % |
 
 These settings are the girl's, whatever mods are on: Save (or Play) writes them in `body.ini` beside `larecomp.ini`,
 which the game reads after every mod's, so they win. The character select screen shows the girls without them; every
@@ -383,14 +383,15 @@ the later one by name wins for each setting both set, and the launcher's `body.i
   - The soft body grows with the part: its points move out to the new surface, and its own lengths (how far each point
     may swing, and each point's size; the costume's `_YWRK.ywrk` presets) scale with the size. A bigger bust swings as
     the normal one does, in proportion.
-  - The colliders that her hair meets follow the shape. A bigger bust gets a collider on each breast, sized from where
-    its soft-body points now are (many costumes have none, and the hair would only meet the chest's); the chest's reaches
+  - The colliders that her hair meets follow the shape. A bigger bust gets a collider on each breast, on its middle
+    soft-body point, so it swings and hangs with the breast, sized from where its soft-body points now are (many costumes have none, and the hair would only meet the chest's); the chest's reaches
     further forward too (and the hips' further back with a bigger butt), and the arms', thighs' and waist's follow
     their thickness.
   - **Bust weight** pulls the breasts toward the ground every frame, after the game's own physics: each soft-body
     point down along gravity by how far out it is (the tip most). Standing, they hang lower; bending over, they hang
     down from her; lying back, they settle toward her chest. The jiggle goes on as before on top of it.
-  - **Breasts meet** (on with a bigger or heavier bust): every frame, after the physics, when the two breasts have
+  - **Bust contact** (on with a bigger or heavier bust), every frame after the physics. Her arms (shoulder to elbow,
+    elbow to wrist, and the hand) press the breasts in where they lie on them. And when the two breasts have
     swung toward each other (sideways) by more than 5 mm, both are pushed back apart, half each, their inner sides
     most, so they press together instead of going through each other. Swaying together, the same way, they move
     freely. The log says how often: `[body] bust contact: they moved toward each other up to 4.5 cm; pushed apart in
@@ -400,8 +401,9 @@ the later one by name wins for each setting both set, and the launcher's `body.i
 - **`bust_physics`** gives her the other girl's breast physics for each costume: the game's own tuning for that girl,
   from the costume's presets, blended when the game starts (`runtime/mods.c`). Costumes the other girl doesn't have keep
   her own physics; her hips' and thighs' stay hers.
-- **Limits:** the arms follow their animations, made for the normal bust: one that crosses in front of the chest can
-  still meet a much bigger bust. What makes the breasts give way to the arms isn't found yet.
+- **Limits:** the arms follow their animations, made for the normal bust; with Bust contact the breast is pressed in
+  where an arm lies on it, but skin close to the chest (on the base bone, not the soft points) can still meet an arm.
+  The hair only collides at its chain bones, so hair between them can still cross a breast.
 - **To undo:** "As she is" in the Mods tab, or delete the lines (or the `body.ini`).
 - The log lists what was applied: `[body] KAS: bust_size 1.40, arm_size 1.20: her bones changed` and
   `[body] KAS: 608 costumes' soft-body presets: movement bust x2.10, butt x1.25, thighs x1.15`.

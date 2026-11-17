@@ -310,7 +310,7 @@ static const struct { const char *key; const wchar_t *label; float lo, hi; BOOL 
     {"thigh_size", L"Thighs", .7f, 2.0f, FALSE},     {"thigh_jiggle", L"Thigh jiggle", 0, 2, TRUE},
     {"arm_size", L"Arms", .7f, 2.0f, FALSE},         {"calf_size", L"Calves", .7f, 2.0f, FALSE},
     {"waist_size", L"Waist", .7f, 1.8f, FALSE},       {"bust_weight", L"Bust weight", .5f, 3, TRUE},
-    {"bust_contact", L"Breasts meet", 0, 1, TRUE},
+    {"bust_contact", L"Bust contact", 0, 1, TRUE},
 };
 // A girl's settings in one body.ini; has[]: the ones the file sets ("bust_physics = none" sets her own over a mod's)
 typedef struct { float v[NVAL], amount; int phys; BOOL has[NKEYS]; } Body;
@@ -1638,7 +1638,7 @@ static void body_note(void) {  // what she gets, and the mods that set her too
     }
     if (n > 0)
         swprintf(t + n, 1400 - n, L" Jiggle: how lively the soft parts are (a bigger part swings further on its own). "
-                                  L"Arms, thighs, calves, waist: thickness. Bust weight: heavier hangs lower, toward the ground. Breasts meet: a bigger bust's two sides push each other apart, 0 % passes through. Saved "
+                                  L"Arms, thighs, calves, waist: thickness. Bust weight: heavier hangs lower, toward the ground. Bust contact: a bigger bust gives way to the arms and its two sides to each other (0 %: they pass through). Saved "
                                   L"in body.ini beside larecomp.ini by Save "
                                   L"or Play.");
     SetWindowTextW(g_body_note, t);

@@ -175,8 +175,8 @@ BODY_INI = '''# Body settings, read by the game when it starts (docs/MODDING.md,
 # bust_physics_amount = 0.5  part of the way there: 0 her own, 1 the other girl's (the default)
 # bust_weight = 1.5          how heavy her breasts are: heavier hang lower toward the ground, however she stands or
 #                            bends; lighter sit higher. 0.5 to 3
-# bust_contact = 1           how firmly her breasts meet each other with a bigger or heavier bust: 0 they pass
-#                            through each other, 1 they push each other apart (the default). 0 to 1
+# bust_contact = 1           how firmly a bigger or heavier bust meets her arms and itself: 1 the breasts give way
+#                            to the arms and push each other apart (the default), 0 they pass through. 0 to 1
 # butt_size = 1.1            the same for her bottom (0.5 to 2.5), and butt_jiggle (0 to 2)
 # thigh_size = 1.1           thickness (0.7 to 2), and thigh_jiggle (0 to 2)
 # arm_size = 0.9             thickness: arm_size, calf_size (0.7 to 2), waist_size (0.7 to 1.8)

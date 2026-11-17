@@ -422,6 +422,25 @@ experimental. What differed, and why:
   skin. 608 costumes' presets scaled at start in 60-210 ms. Movement and arm contact need watching in motion.
 - `LARECOMP_BODY_INI=<file>`: a body.ini to read in place of the launcher's (test runs).
 
+## Body settings: jiggle back, the arms on a bigger bust, breast colliders that move with it
+
+- **Jiggle and other girls' physics had stopped working** since `bust_contact` was added: `runtime/mods.c` reads the
+  settings' struct from `runtime/hle/body_shape.h`, and the Makefile's header list (`RT_HDRS`) left out
+  `runtime/hle/*.h`, so it wasn't rebuilt and read every value one place off (the log said "0 costumes' soft-body
+  presets: jiggle bust x0.00"). The list has them now.
+- **Arms** (`bust_contact`, the launcher's slider now "Bust contact"): after the weight and the breasts' contact, each
+  breast point is kept out of three capsules per arm: `MOT08_LeftArm` to `MOT04_LeftForeArm` (4.2 cm), to
+  `MOT05_LeftHand` (3.3 cm), and 8 cm on from the wrist (2.5 cm), times `arm_size`, plus 1.8 cm of skin beyond the
+  point times the bust size. A point inside is put on the capsule's surface, on the side its breast's base is. Seen on
+  Kasumi at bust 1.8: arms pressed in on the bust in 121 of 300 updates in the shower scene; a forearm across her
+  front presses the underside in.
+- **Breast colliders on the soft body:** the collider each breast gets (ACSCLS table 1) is now on the soft-body point
+  nearest the points' middle (Kasumi's: nodes 116 and 146), centred on that middle and sized from the points' spread
+  about it (x1.1, plus 1.5 cm of skin), so the hair meets the breast where it swings and hangs. Checked with
+  `LARECOMP_BODY_PROBE`: the live colliders' centres were within 3 cm of the breasts' middles at the same moment.
+- `tools/route.sh marie`: Marie Rose picked on the character select (RIGHT five times). The select screen's timing
+  varies between runs by more than the presses' spacing, so it doesn't always land on her yet.
+
 ## Body settings: breast colliders, bust weight and the breasts meeting, for a bigger bust
 
 - **Hair on a bigger bust:** many costumes' collider tables (ACSCLS table 1) have no breast colliders. A bigger bust

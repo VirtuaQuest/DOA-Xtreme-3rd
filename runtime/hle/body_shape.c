@@ -13,8 +13,8 @@
 //   arm_size, calf_size, waist_size   thickness: arms, calves (below the knee), waist
 //   bust_weight = 1.5           how heavy her breasts are, 1 as they are: heavier ones hang lower along gravity, every
 //                               frame, however she stands or bends (the further out, the more); lighter ones sit higher
-//   bust_contact = 1            how firmly her breasts meet each other (with a bigger or heavier bust): 0 they pass
-//                               through each other, as before; 1 they push each other apart, sideways
+//   bust_contact = 1            how firmly a bigger or heavier bust meets the arms and itself: 1 the breasts give way
+//                               to her arms and push each other apart; 0 they pass through, as before
 // "bust_physics = none" gives a girl her own physics back over a mod's. The jiggle and physics are served by
 // runtime/mods.c (body_physics), as her costumes' _YWRK.ywrk presets.
 //
@@ -456,8 +456,9 @@ static void move_point(Shape *s, int n) {
 // sized from where its soft-body points now are, and the ACSCLS chunk is pointed at the copy. Table 1: a 0x30 header
 // (+0x10 its size, +0x14 and +0x18 the count, +0x20 the offsets' place), then a nested one at +0x30 (its own +0x10
 // size and counts; at its +0x30 a descriptor of 12 bytes per collider: kind 2 = an ellipsoid, the node, the node
-// name's hash), then the records' offsets, then the 0x40-byte records. A record's bone is found by its index (+0x30;
-// FUN_70005b76d0). The copies live in guest memory the runtime keeps above the game's heap (the chunk's offsets are 32
+// name's hash), then the records' offsets, then the 0x40-byte records (+0 euler angles, +0x10 half sizes, +0x20 the
+// offset in the bone's frame, +0x30 the node, +0x34 the hash). A record's bone is found by its index (+0x30;
+// FUN_70005b76d0). Each breast's collider sits on its middle soft-body point, so it swings and hangs with the breast. The copies live in guest memory the runtime keeps above the game's heap (the chunk's offsets are 32
 // bits from it, so a copy must be above it).
 #define BODY_TABLES 0x7310000000ull
 #define BODY_TABLES_SIZE 0x8000000ull
@@ -497,19 +498,40 @@ static int breast_colliders(Shape *s) {
             has |= entry(tb, i) && rd32(entry(tb, i) + 0x30) == (uint32_t)base;
         points(s, pts, list, &n, 48);
         if (base < 0 || has || n < 4) continue;
-        const float *g = (const float *)entry(s->gm, (uint32_t)base);  // (its bind world: rotation rows, unchanged)
-        float half[3] = {0, 0, 0}, p[3];
+        // (on the soft-body point nearest the points' middle, so it moves with the jiggle and the bust weight: centred
+        // on that middle, its half sizes the points' spread about it along the point's axes, plus the skin beyond)
+        float c[3] = {0, 0, 0}, p[3], best = 1e9f;
+        int mid = list[0];
         for (int k = 0; k < n; k++) {
             pos(s, list[k], p);  // (where the shape has moved it)
-            for (int ax = 0; ax < 3; ax++) {
-                float l = (p[0] - g[12]) * g[ax * 4] + (p[1] - g[13]) * g[ax * 4 + 1] + (p[2] - g[14]) * g[ax * 4 + 2];
-                if (fabsf(l) > half[ax]) half[ax] = fabsf(l);
+            for (int ax = 0; ax < 3; ax++) c[ax] += p[ax] / (float)n;
+        }
+        for (int k = 0; k < n; k++) {
+            pos(s, list[k], p);
+            float d2 = (p[0] - c[0]) * (p[0] - c[0]) + (p[1] - c[1]) * (p[1] - c[1]) + (p[2] - c[2]) * (p[2] - c[2]);
+            if (d2 < best) best = d2, mid = list[k];
+        }
+        const float *g = (const float *)entry(s->gm, (uint32_t)mid);  // (its bind world: rotation rows, unchanged)
+        float half[3] = {0, 0, 0}, row[3][3];
+        for (int r = 0; r < 3; r++) {
+            float l = sqrtf(g[r * 4] * g[r * 4] + g[r * 4 + 1] * g[r * 4 + 1] + g[r * 4 + 2] * g[r * 4 + 2]);
+            for (int ax = 0; ax < 3; ax++) row[r][ax] = l > 1e-6f ? g[r * 4 + ax] / l : 0;
+        }
+        for (int k = 0; k < n; k++) {
+            pos(s, list[k], p);
+            for (int r = 0; r < 3; r++) {
+                float l = (p[0] - c[0]) * row[r][0] + (p[1] - c[1]) * row[r][1] + (p[2] - c[2]) * row[r][2];
+                if (fabsf(l) > half[r]) half[r] = fabsf(l);
             }
         }
         float *r = (float *)add[nadd];
-        for (int ax = 0; ax < 3; ax++) r[4 + ax] = half[ax] * 1.15f + 0.005f;  // (the skin reaches about 15 % further)
+        pos(s, mid, p);
+        for (int ax = 0; ax < 3; ax++) {
+            r[4 + ax] = half[ax] * 1.1f + 0.015f;  // (the skin: about 1.5 cm beyond the outer points)
+            r[8 + ax] = (c[0] - p[0]) * row[ax][0] + (c[1] - p[1]) * row[ax][1] + (c[2] - p[2]) * row[ax][2];
+        }
         r[11] = 1;
-        wr32(add[nadd] + 0x30, (uint32_t)base), wr32(add[nadd] + 0x34, hash[side]);
+        wr32(add[nadd] + 0x30, (uint32_t)mid), wr32(add[nadd] + 0x34, hash[side]);  // (the game goes by the index)
         nadd++;
     }
     if (!nadd) return 0;
@@ -647,7 +669,10 @@ typedef struct {
     float local[2][24][3];  // (each point's rest place, in its base's frame)
     float inner[2][24];     // (1: the point nearest the other breast in the bind pose, 0: the furthest)
     float k, contact;
-    int pushes, updates;
+    int arm[2][3];      // (each side's upper arm, forearm and hand joints: MOT08_LeftArm, MOT04_LeftForeArm ...)
+    float arm_r[3];     // (their radii: upper arm, forearm, hand)
+    float margin;       // (how far the skin reaches beyond a breast point)
+    int pushes, updates, arm_pushes;
     float most_push;
 } Weight;
 static Weight g_weight[32];
@@ -719,10 +744,18 @@ static void weight_register(uint64_t resources, const BodySettings *b) {
                                                : 0;
         w->base[side] = base, w->npts[side] = n;
     }
+    static const char *const ARM[2][3] = {{"MOT08_LeftArm", "MOT04_LeftForeArm", "MOT05_LeftHand"},
+                                          {"MOT14_RightArm", "MOT10_RightForeArm", "MOT11_RightHand"}};
+    for (int a = 0; a < 2; a++)
+        for (int j = 0; j < 3; j++) w->arm[a][j] = nl && nodes <= 4096 ? model_node(nl, nodes, ARM[a][j]) : -1;
+    float t = b ? b->v[BODY_ARM_SIZE] : 1;  // (Kasumi's: about 4.2 cm round the upper arm, 3.3 the forearm)
+    w->arm_r[0] = 0.042f * t, w->arm_r[1] = 0.033f * t, w->arm_r[2] = 0.025f * t;
+    w->margin = 0.018f * (b ? fmaxf(1, b->v[BODY_BUST_SIZE]) : 1);
     if (w->npts[0] || w->npts[1]) {
         w->res = resources, w->k = k, w->contact = contact;
-        LOG("[body] bust weight %.2f (pull %.2f), contact %.2f: %d + %d soft-body points\n", b->v[BODY_BUST_WEIGHT], k,
-            contact, w->npts[0], w->npts[1]);
+        LOG("[body] bust weight %.2f (pull %.2f), contact %.2f: %d + %d soft-body points, arms %s\n",
+            b->v[BODY_BUST_WEIGHT], k, contact, w->npts[0], w->npts[1],
+            w->arm[0][2] >= 0 && w->arm[1][2] >= 0 && w->arm[0][0] >= 0 && w->arm[1][0] >= 0 ? "found" : "not found");
     }
     pthread_mutex_unlock(&g_weight_lock);
 }
@@ -783,6 +816,47 @@ static void bust_contact(Weight *w, uint64_t mats) {
     w->pushes++;
 }
 
+// The arms: each breast point is kept out of the arms by the arm's radius and the skin beyond the point, the breast
+// giving way (pressed in where an arm lies on it); capsules from the shoulder joint to the elbow, the elbow to the
+// wrist, and the wrist 8 cm on. A point the arm has gone past (on the arm's far side from its breast's base) is put
+// back on the base's side.
+static int bust_arms(Weight *w, uint64_t mats) {
+    int pushed = 0;
+    for (int a = 0; a < 2; a++) {
+        if (w->arm[a][0] < 0 || w->arm[a][1] < 0 || w->arm[a][2] < 0) continue;
+        float J[4][3];
+        for (int j = 0; j < 3; j++)
+            memcpy(J[j], (const float *)(uintptr_t)(mats + (uint64_t)w->arm[a][j] * 0x40) + 12, 12);
+        float h[3], hl = 0;
+        for (int ax = 0; ax < 3; ax++) h[ax] = J[2][ax] - J[1][ax], hl += h[ax] * h[ax];
+        hl = sqrtf(hl);
+        if (hl < 1e-4f) continue;
+        for (int ax = 0; ax < 3; ax++) J[3][ax] = J[2][ax] + h[ax] / hl * 0.08f;
+        for (int side = 0; side < 2; side++) {
+            const float *B = (const float *)(uintptr_t)(mats + (uint64_t)w->base[side] * 0x40) + 12;
+            for (int i = 0; i < w->npts[side]; i++) {
+                float *t = (float *)(uintptr_t)(mats + (uint64_t)w->pts[side][i] * 0x40) + 12;
+                for (int seg = 0; seg < 3; seg++) {
+                    const float *P = J[seg], *Q = J[seg + 1];
+                    float u[3], v[3], uu = 0, f = 0;
+                    for (int ax = 0; ax < 3; ax++) u[ax] = Q[ax] - P[ax], uu += u[ax] * u[ax];
+                    for (int ax = 0; ax < 3; ax++) f += (t[ax] - P[ax]) * u[ax];
+                    f = uu > 1e-8f ? fminf(1, fmaxf(0, f / uu)) : 0;
+                    float c[3], d = 0, sb = 0, lim = w->arm_r[seg] + w->margin;
+                    for (int ax = 0; ax < 3; ax++) c[ax] = P[ax] + f * u[ax], v[ax] = t[ax] - c[ax], d += v[ax] * v[ax];
+                    d = sqrtf(d);
+                    if (d >= lim || d < 1e-5f) continue;
+                    for (int ax = 0; ax < 3; ax++) sb += v[ax] * (B[ax] - c[ax]);
+                    float to = sb >= 0 ? lim : -lim;  // (the far side: back through to the base's)
+                    for (int ax = 0; ax < 3; ax++) t[ax] = c[ax] + v[ax] / d * to;
+                    pushed++;
+                }
+            }
+        }
+    }
+    return pushed;
+}
+
 void rt_body_soft_post(uint64_t part, uint64_t mats) {
     pthread_mutex_lock(&g_weight_lock);
     Weight *w = weight_of(part);
@@ -804,11 +878,13 @@ void rt_body_soft_post(uint64_t part, uint64_t mats) {
             }
         }
         if (w->contact > 0 && w->npts[0] && w->npts[1]) bust_contact(w, mats);
+        if (w->contact > 0) w->arm_pushes += bust_arms(w, mats) > 0;
         static int told;
         if (w->updates && w->updates % 300 == 0 && told < 6) {  // (now and then, to see it working)
             told++;
-            LOG("[body] bust contact: they moved toward each other up to %.1f cm; pushed apart in %d of %d updates\n",
-                w->most_push * 100, w->pushes, w->updates);
+            LOG("[body] bust contact: they moved toward each other up to %.1f cm; pushed apart in %d of %d updates; arms "
+                "pressed in on them in %d\n",
+                w->most_push * 100, w->pushes, w->updates, w->arm_pushes);
         }
     }
     pthread_mutex_unlock(&g_weight_lock);

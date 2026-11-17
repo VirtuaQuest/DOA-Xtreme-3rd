@@ -5,6 +5,7 @@
 #   volleyball  fresh save: opening movie, Kasumi's arrival, Niki Beach -> Beach Volleyball     ~420 s
 #   relax       fresh save: as volleyball but Relax (the shower scene), evening, night           ~330 s
 #   momiji      fresh save: as relax, with Momiji picked on the character select                ~330 s
+#   marie       fresh save: as relax, with Marie Rose picked (RIGHT five times)                ~330 s
 #   select      fresh save: the opening, then the character select screen left idle            ~190 s
 #   select-walk fresh save: the character select, RIGHT every 60 frames (who is where)          ~200 s
 # Fresh-save routes move save/ aside first and put it back afterwards (the game autosaves).
@@ -33,6 +34,11 @@ momiji)  # (as relax, but Momiji: RIGHT once on the character select, ready from
     fresh=1
     in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 3740),4000:RIGHT:8$(seq_presses A 4100 120 9500)"
     : "${secs:=330}" ;;
+marie)  # (as momiji, RIGHT five times: Kasumi, Momiji, Leifang, Hitomi, Helena, Marie Rose, Honoka ...)
+    fresh=1
+    in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 3620)$(seq_presses RIGHT 3800 30 3920)"
+    in="$in$(seq_presses A 4040 120 9500)"
+    : "${secs:=330}" ;;
 select)  # (the character select screen left idle from ~frame 3800: its rotating backgrounds, for 60 fps checks)
     fresh=1
     in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 3740)"
@@ -42,7 +48,7 @@ select-walk)  # (the character select, then RIGHT every 60 frames from 3900: scr
     in="400:A:10,1100:A:10,1600:A:10,1800:A:10$(seq_presses A 2300 120 3740)$(seq_presses RIGHT 3900 60 4500)"
     : "${secs:=200}" ;;
 *)
-    sed -n '2,9p' "$0"; exit 1 ;;
+    sed -n '2,10p' "$0"; exit 1 ;;
 esac
 if [ "$fresh" = 1 ]; then
     rm -rf save.route-backup
