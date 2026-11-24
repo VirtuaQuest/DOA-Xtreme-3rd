@@ -11,19 +11,33 @@
 #include <string.h>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/mman.h>
+#include <ucontext.h>
 #endif
 
 #include "../hle.h"
 #include "../kernel.h"
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__linux__)
 Cpu *fiber_current_cpu(void) { return NULL; }  // (no fibers on this host yet)
 #else
 #define FIBER_HOST_STACK (16u << 20)  // reserved (committed as used): recompiled code is stack hungry
 
+// ---- host fibers: Windows' own; Linux: ucontext (makecontext / swapcontext) on an mmap'd stack with a guard page.
+// swapcontext doesn't save the fs base, so thread-locals stay the running thread's after a switch, as on Windows.
+#ifdef _WIN32
+typedef void *HostCtx;
+#define HOST_FIBER_ENTRY static void WINAPI
+#else
+typedef struct { ucontext_t uc; void *stack; size_t size; } LinuxFiber;
+typedef LinuxFiber *HostCtx;
+#define HOST_FIBER_ENTRY static void
+#endif
+
 typedef struct HostFiber {
     uint64_t guest;               // the guest FiberType
-    void *host;                   // the host fiber
+    HostCtx host;                 // the host fiber
     uint64_t func, arg, stack_top;
     Cpu cpu;                      // this fiber's guest registers
     struct HostFiber *next;
@@ -33,17 +47,57 @@ static pthread_mutex_t g_fibers_lock = PTHREAD_MUTEX_INITIALIZER;
 static HostFiber *g_fibers;
 
 static __thread HostFiber *t_cur;  // the fiber this thread runs (NULL: the thread's own context)
-static __thread void *t_host;      // this thread as a host fiber (ConvertThreadToFiber), once it switched
+static __thread HostCtx t_host;    // this thread as a host fiber (ConvertThreadToFiber), once it switched
+
+#ifdef _WIN32
+static HostCtx host_thread_fiber(void) {
+    void *h = ConvertThreadToFiberEx(NULL, FIBER_FLAG_FLOAT_SWITCH);
+    return h ? h : GetCurrentFiber();  // (already a fiber)
+}
+static HostCtx host_fiber_create(void (WINAPI *fn)(void *), void *arg) {
+    HostCtx h = CreateFiberEx(64 << 10, FIBER_HOST_STACK, FIBER_FLAG_FLOAT_SWITCH, fn, arg);
+    if (!h) FATAL("[fiber] CreateFiberEx failed (%lu)\n", GetLastError());
+    return h;
+}
+static void host_fiber_delete(HostCtx h) { DeleteFiber(h); }
+static void host_fiber_switch(HostCtx from, HostCtx to) { (void)from; SwitchToFiber(to); }
+#else
+static HostCtx host_thread_fiber(void) { return calloc(1, sizeof(LinuxFiber)); }  // (its context: saved at a switch)
+static void (*g_entry)(void *);
+// makecontext passes ints: the fiber's pointer in two halves
+static void linux_fiber_start(unsigned lo, unsigned hi) { g_entry((void *)(((uintptr_t)hi << 32) | lo)); }
+static HostCtx host_fiber_create(void (*fn)(void *), void *arg) {
+    LinuxFiber *f = calloc(1, sizeof *f);
+    f->size = FIBER_HOST_STACK;
+    // reserved, backed as used; the lowest page a guard (a fiber that overflows faults instead of corrupting memory)
+    f->stack = mmap(NULL, f->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
+    if (f->stack == MAP_FAILED) FATAL("[fiber] can't map a fiber stack\n");
+    mprotect(f->stack, 4096, PROT_NONE);
+    if (getcontext(&f->uc)) FATAL("[fiber] getcontext failed\n");
+    f->uc.uc_stack.ss_sp = f->stack;
+    f->uc.uc_stack.ss_size = f->size;
+    f->uc.uc_link = NULL;  // (fiber_main never returns)
+    g_entry = fn;
+    uintptr_t a = (uintptr_t)arg;
+    makecontext(&f->uc, (void (*)(void))linux_fiber_start, 2, (unsigned)a, (unsigned)(a >> 32));
+    return f;
+}
+static void host_fiber_delete(HostCtx h) {
+    if (!h) return;
+    munmap(h->stack, h->size);
+    free(h);
+}
+static void host_fiber_switch(HostCtx from, HostCtx to) {
+    if (swapcontext(&from->uc, &to->uc)) FATAL("[fiber] swapcontext failed\n");
+}
+#endif
 
 // (thread-local accessors that the compiler can't move across a fiber switch: after one, this code may run on another
 // thread with other thread-locals)
 __attribute__((noinline)) static HostFiber *cur_get(void) { return t_cur; }
 __attribute__((noinline)) static void cur_set(HostFiber *f) { t_cur = f; }
-__attribute__((noinline)) static void *thread_host(void) {
-    if (!t_host) {
-        t_host = ConvertThreadToFiberEx(NULL, FIBER_FLAG_FLOAT_SWITCH);
-        if (!t_host) t_host = GetCurrentFiber();  // (already a fiber)
-    }
+__attribute__((noinline)) static HostCtx thread_host(void) {
+    if (!t_host) t_host = host_thread_fiber();
     return t_host;
 }
 
@@ -75,15 +129,15 @@ static void adopt_thread(Cpu *c) {
 static void switch_to(Cpu *c, uint64_t guest) {
     HostFiber *to = guest ? find(guest) : NULL;
     if (guest && !to) FATAL("[fiber] SwitchToFiber(%llx): not an initialized fiber\n", (unsigned long long)guest);
-    void *self = thread_host();  // (the thread's own context must be a host fiber before it can switch away)
+    HostCtx self = thread_host();  // (the thread's own context must be a host fiber before it can switch away)
     HostFiber *from = cur_get();
     if (from == to) return;
     cur_set(to);
-    SwitchToFiber(to ? to->host : self);
+    host_fiber_switch(from ? from->host : self, to ? to->host : self);
     adopt_thread(c);  // (resumed: maybe on another thread)
 }
 
-static void WINAPI fiber_main(void *p) {
+HOST_FIBER_ENTRY fiber_main(void *p) {
     HostFiber *f = p;
     Cpu *c = &f->cpu;
     adopt_thread(c);
@@ -101,7 +155,7 @@ HLE_FUNC("_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi", fiber_in
     HostFiber *f = find(guest);
     if (f) {
         if (f == cur_get()) FATAL("[fiber] InitializeFiber on the running fiber %llx\n", (unsigned long long)guest);
-        DeleteFiber(f->host);
+        host_fiber_delete(f->host);
     } else {
         f = calloc(1, sizeof *f);
         f->guest = guest;
@@ -117,8 +171,7 @@ HLE_FUNC("_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi", fiber_in
     f->cpu.excl_addr = ~0ull;
     f->cpu.fpcr = c->fpcr;
     f->cpu.fpsr = c->fpsr;
-    f->host = CreateFiberEx(64 << 10, FIBER_HOST_STACK, FIBER_FLAG_FLOAT_SWITCH, fiber_main, f);
-    if (!f->host) FATAL("[fiber] CreateFiberEx failed (%lu)\n", GetLastError());
+    f->host = host_fiber_create(fiber_main, f);
     static int nlog;
     if (nlog++ < 8)
         LOG("[fiber] init %llx func %llx arg %llx stack %llx+%llx flags %llx\n", (unsigned long long)guest,
@@ -137,7 +190,7 @@ HLE_FUNC("_ZN2nn2os13FinalizeFiberEPNS0_9FiberTypeE", fiber_finalize) {
     pthread_mutex_unlock(&g_fibers_lock);
     if (!f) return;
     if (f == cur_get()) FATAL("[fiber] FinalizeFiber on the running fiber %llx\n", (unsigned long long)guest);
-    DeleteFiber(f->host);
+    host_fiber_delete(f->host);
     free(f);
 }
 

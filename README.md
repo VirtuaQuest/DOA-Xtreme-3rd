@@ -3,7 +3,7 @@
 <a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
 
 A static recompilation of *DEAD OR ALIVE Xtreme 3 Scarlet* (Nintendo Switch: version 1.0.0 or the 1.0.6 update, with
-DLC) into a native Windows x86-64 program. It's built on [LAS Recomp](https://github.com/peiikai/LASRecomp)'s recompiler
+DLC) into a native Windows or Linux x86-64 program. It's built on [LAS Recomp](https://github.com/peiikai/LASRecomp)'s recompiler
 and Switch runtime.
 
 > **No game included.** This project contains no game files, code, art, audio or keys. To use it you need your own
@@ -17,7 +17,8 @@ with sound, the opening movie, optional 60 and 120 fps modes, a selectable 3D re
 
 ## What you need
 
-- **A Windows PC:** Windows 10 or 11, 64-bit; a 64-bit CPU from 2008 or newer (SSE4.2; with AVX2, Intel 4th
+- **A Windows or Linux PC:** Windows 10 or 11, 64-bit, or a 64-bit Linux from about 2023 on (see
+  [docs/LINUX.md](docs/LINUX.md)); a 64-bit CPU from 2008 or newer (SSE4.2; with AVX2, Intel 4th
   generation / AMD Ryzen or newer, it runs about 10% faster: the game is built for the CPU of the PC it's set up on);
   a GPU with Vulkan drivers; about 20 GB of free disk space; an internet connection for the one-time tool download.
 - **Your game, as `.nsp` files dumped from your own console:**
@@ -39,6 +40,16 @@ It takes about an hour and about 20 GB. Then Play starts the game, and the windo
 frame rate (30 by default; 60 and 120 experimental), anti-aliasing, texture filtering, upscaler, FPS counter, controls and background
 controller input can be changed on the game's page. When a new version comes out, the first Play builds the
 game again, in the setup window, without extracting your files again.
+
+## Install on Linux
+
+Install the build tools from your distribution's packages ([docs/LINUX.md](docs/LINUX.md) has the command for Arch,
+Debian / Ubuntu and Fedora), then, in the project folder:
+
+```sh
+./Setup.sh --game <the folder with your .nsp files>    # finds prod.keys there, or: --keys <file>
+./Play.sh                                              # the launcher: Game, Controls and Mods tabs, then Play
+```
 
 ## Install by hand
 
