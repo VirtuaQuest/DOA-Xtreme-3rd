@@ -306,13 +306,24 @@ static void log_to_file_without_terminal(void) {
 }
 
 #if defined(__x86_64__)
-// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
-// with an illegal instruction on an older CPU.
+// The recompiled game code is built for the CPU level of the PC that built it (Makefile GENLEVEL: x86-64-v3 with AVX2,
+// FMA and BMI2, or x86-64-v2 with SSE4.2 and POPCNT): say so instead of crashing with an illegal instruction.
+#ifndef GAME_CPU_V3
+#define GAME_CPU_V3 1
+#endif
 static void require_cpu(void) {
     __builtin_cpu_init();
+#if GAME_CPU_V3
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
-    fprintf(stderr, "FATAL: DOAX3 Recomp needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or "
-                    "newer).\n");
+    const char *msg = "This copy of DOAX3 Recomp was built for a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD "
+                      "Excavator / Zen or newer). Build it on this PC (tools/linux/setup.sh) to play here: it then "
+                      "builds for this CPU.";
+#else
+    if (__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt")) return;
+    const char *msg = "DOAX3 Recomp needs a CPU with SSE4.2 (Intel Nehalem / 2008 or newer, AMD Bulldozer or newer).";
+#endif
+    fprintf(stderr, "FATAL: %s\n", msg);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "DOAX3 Recomp", msg, NULL);
     exit(1);
 }
 #else

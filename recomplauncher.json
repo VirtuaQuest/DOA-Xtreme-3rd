@@ -18,13 +18,13 @@
     }
   ],
   "prepare": {
-    "program": ["DOAX3Launcher.exe"],
+    "program": ["DOAX3Launcher.exe", "doax3launcher"],
     "args": ["--prepare", "--game", "{input:game}", "--keys", "{input:keys}"],
-    "label": "Building the game from your files. The first time, it also installs the free build tools (MSYS2 and Python 3.12), and Windows may ask for permission. Takes about an hour and needs about 20 GB free.",
+    "label": "Building the game from your files. The first time, it also installs the free build tools (MSYS2 and Python 3.12), and Windows may ask for permission. On Linux, install the build tools from your distribution first (docs/LINUX.md lists them). Takes about an hour and needs about 20 GB free.",
     "timeout": 10800
   },
   "start": {
-    "program": ["DOAX3Launcher.exe"],
+    "program": ["DOAX3Launcher.exe", "doax3launcher"],
     "args": ["--play"]
   },
   "config": [
